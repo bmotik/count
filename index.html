@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Count">
+<meta name="theme-color" content="#0f1319">
+<title>Swipe Count — stacked parts</title>
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%230f1319'/%3E%3Cg stroke='%234ce39a' stroke-width='11' stroke-linecap='round'%3E%3Cpath d='M46 44v92M75 44v92M105 44v92M134 44v92'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  :root{
+    --bg:#0f1319; --panel:#181d26; --panel2:#212834; --line:#2c3441;
+    --ink:#eaeef4; --dim:#93a0b1; --accent:#4ce39a; --accent-ink:#062b1c;
+    --warn:#ffb454; --bad:#ff6b6b;
+    --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
+  }
+  html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+  /* An element's own display rule beats the default [hidden] styling, so the
+     busy overlay stayed on screen forever. Make hidden win everywhere. */
+  [hidden]{display:none!important}
+  body{background:var(--bg);color:var(--ink);
+    font:15px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+    display:flex;flex-direction:column;touch-action:none;
+    -webkit-user-select:none;user-select:none}
+
+  header{flex:0 0 auto;padding:calc(var(--safe-t) + 10px) 12px 10px;
+    display:flex;align-items:center;gap:12px;background:var(--panel);
+    border-bottom:1px solid var(--line)}
+  .count{font:700 36px/1 -apple-system,system-ui,sans-serif;
+    font-variant-numeric:tabular-nums;letter-spacing:-.02em;min-width:2.4ch}
+  .count small{display:block;font:500 10px/1.2 system-ui;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--dim);margin-top:5px;white-space:nowrap}
+  header .grow{flex:1}
+  .sens{display:flex;align-items:center;gap:0;background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .sens button{background:none;border:0;color:var(--ink);font:600 19px/1 system-ui;
+    width:36px;height:40px}
+  .sens button:active{background:#2f3846}
+  .sens span{font:600 12px/1 "SF Mono",ui-monospace,monospace;color:var(--dim);
+    min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
+  .iconbtn{flex:0 0 auto;width:42px;height:42px;border-radius:11px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+    display:grid;place-items:center}
+  .iconbtn:active{background:#2f3846}
+  .iconbtn[disabled]{opacity:.35}
+  svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;
+    stroke-linecap:round;stroke-linejoin:round;display:block}
+
+  #secBar{flex:0 0 auto;background:var(--panel);color:var(--dim);
+    font:500 11.5px/1 "SF Mono",ui-monospace,monospace;padding:0 12px 9px;
+    border-bottom:1px solid var(--line);white-space:nowrap;overflow-x:auto}
+
+  #stage{flex:1 1 auto;position:relative;overflow:hidden;background:#070a0e;touch-action:none}
+  #wrap{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+  #view{display:block}
+  .empty{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:16px;padding:30px;
+    text-align:center;color:var(--dim)}
+  .empty h1{font:600 19px/1.3 system-ui;color:var(--ink)}
+  .empty p{max-width:30ch;font-size:14px}
+  .primary{background:var(--accent);color:var(--accent-ink);border:none;
+    border-radius:13px;font:600 16px/1 system-ui;padding:15px 24px;
+    display:inline-flex;align-items:center;gap:9px}
+  .primary:active{filter:brightness(.9)}
+  .primary[disabled]{opacity:.4}
+  .ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+    border-radius:12px;font:500 14px/1 system-ui;padding:13px 16px}
+  .ghost:active{background:#2f3846}
+  .ghost.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+
+  #busy{position:absolute;inset:0;display:grid;place-items:center;z-index:20;
+    background:rgba(7,10,14,.82);color:var(--dim);font:500 14px/1 system-ui}
+
+  .hint{flex:0 0 auto;background:var(--panel);color:var(--dim);
+    font-size:11.5px;text-align:center;padding:9px 14px;line-height:1.4}
+  .hint.warn{background:#33260f;color:var(--warn);font-weight:500}
+
+  footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
+    padding:10px 12px calc(var(--safe-b) + 10px);display:flex;gap:8px;align-items:center}
+  footer .grow{flex:1}
+
+  #sheet{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:30;
+    display:none;align-items:flex-end}
+  #sheet.on{display:flex}
+  .sheetBody{width:100%;max-height:88%;overflow:auto;background:var(--panel);
+    border-radius:18px 18px 0 0;border-top:1px solid var(--line);
+    padding:20px 18px calc(var(--safe-b) + 20px);-webkit-user-select:text;user-select:text}
+  .sheetBody h2{font:600 17px/1.3 system-ui;margin-bottom:4px}
+  .sheetBody .sub{font-size:13px;color:var(--dim);margin-bottom:16px}
+  label{display:block;font:600 11px/1 system-ui;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--dim);margin:18px 0 8px}
+  input[type=number]{width:100%;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;color:var(--ink);font:15px/1 system-ui;padding:12px;
+    -webkit-user-select:text;user-select:text}
+  .note{font-size:12px;color:var(--dim);margin-top:8px;line-height:1.5}
+  .row{display:flex;gap:8px;margin-top:22px}
+  .row button{flex:1}
+  .row2{display:flex;gap:8px}
+  .row2 button{flex:1}
+  .kv{display:flex;justify-content:space-between;font-size:13.5px;color:var(--dim);
+    padding:9px 0;border-bottom:1px solid var(--line)}
+  .kv b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+  .err{color:var(--bad);font-size:13px;white-space:pre-wrap;
+    -webkit-user-select:text;user-select:text}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="count"><span id="total">—</span><small id="totalLab">count</small></div>
+  <div class="grow"></div>
+  <div class="sens">
+    <button id="sensDown" aria-label="Less sensitive">&minus;</button>
+    <span id="sensVal">1</span>
+    <button id="sensUp" aria-label="More sensitive">+</button>
+  </div>
+  <button class="iconbtn" id="cfgBtn" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.6v3M12 18.4v3M21.4 12h-3M5.6 12h-3M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1M18.6 18.6l-2.1-2.1M7.5 7.5L5.4 5.4"/></svg></button>
+</header>
+
+<div id="secBar" hidden></div>
+
+<div id="stage">
+  <div id="wrap"><canvas id="view"></canvas></div>
+  <div class="empty" id="empty">
+    <h1>Swipe across the stack</h1>
+    <p>Photograph the edge, drag one finger across the parts, and every part it finds gets a tick you can correct.</p>
+    <button class="primary" id="shootEmpty"><svg viewBox="0 0 24 24" style="width:19px;height:19px"><path d="M3 8.4h3.4L8 5.6h8l1.6 2.8H21v10.2H3z"/><circle cx="12" cy="13.2" r="3.6"/></svg>Take photo</button>
+    <button class="ghost" id="pickEmpty">Choose from library</button>
+  </div>
+  <div id="busy" hidden>Working…</div>
+</div>
+
+<div class="hint" id="hint">Take a photo of the stack edge to begin</div>
+
+<footer>
+  <button class="iconbtn" id="shoot" aria-label="New photo"><svg viewBox="0 0 24 24"><path d="M3 8.4h3.4L8 5.6h8l1.6 2.8H21v10.2H3z"/><circle cx="12" cy="13.2" r="3.6"/></svg></button>
+  <button class="iconbtn" id="pick" aria-label="Library"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.2"/><circle cx="8.4" cy="10" r="1.6"/><path d="M4 16.6l4.6-4.2 3.4 3 3-2.4L20 17"/></svg></button>
+  <button class="primary grow" id="addSection" disabled>Save section</button>
+  <button class="iconbtn" id="clearAll" aria-label="Clear all"><svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg></button>
+  <button class="iconbtn" id="saveBtn" aria-label="Save image"><svg viewBox="0 0 24 24"><path d="M12 4v11M7.6 10.8L12 15.2l4.4-4.4M4.4 19.4h15.2"/></svg></button>
+</footer>
+
+<div id="sheet"><div class="sheetBody" id="sheetBody"></div></div>
+
+<input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
+<input type="file" id="fileLib" accept="image/*" hidden>
+
+<script>
+/* ===========================================================================
+   Stack counting engine — JavaScript port of the Python that was validated
+   against Bruno's four workshop photos (A 30/30, B 14/14, C 14/14, D 25/26).
+
+   Nothing here is a fresh idea. Every step exists because a specific thing
+   went wrong on a real photo:
+
+     downscale to WORK_W  — full resolution resolves the saw striations on cut
+                            faces, which are a strong regular pattern in their
+                            own right. One close-up counted 97 parts where
+                            there were 8.
+     local contrast norm  — a glare gradient otherwise hides parts at the dark
+                            end while noise invents them at the bright end.
+     harmonic pitch (HPS) — each part shows 2-3 bright lines (face, bevel,
+                            shadow). Counting lines gave 30, 25 and 35 where
+                            the true answers were 14, 14 and 26.
+     low-value padding    — a part sitting exactly at the end of the line is
+                            invisible to peak detection: a systematic -1.
+
+   Deliberately absent: automatic scan-line placement (it locks onto tool
+   marks) and perspective rectification (on fanned parts the varying spacing
+   is real, not distortion).
+   =========================================================================== */
+
+const SS = 2;          // profile samples per pixel
+const WORK_W = 2200;   // working width in pixels — see note in README
+
+/* ---------------------------------------------------------------- helpers */
+
+function gaussianKernel(sigma) {
+  const r = Math.max(1, Math.ceil(4 * sigma));     // scipy truncate=4.0
+  const k = new Float64Array(2 * r + 1);
+  let sum = 0;
+  for (let i = -r; i <= r; i++) {
+    const v = Math.exp(-0.5 * (i / sigma) * (i / sigma));
+    k[i + r] = v; sum += v;
+  }
+  for (let i = 0; i < k.length; i++) k[i] /= sum;
+  return { k, r };
+}
+
+/** 1-D Gaussian filter with reflect padding, matching scipy's default mode. */
+function gaussian1d(x, sigma) {
+  if (sigma <= 0) return Float64Array.from(x);
+  const { k, r } = gaussianKernel(sigma);
+  const n = x.length;
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let acc = 0;
+    for (let j = -r; j <= r; j++) {
+      let idx = i + j;
+      // reflect: scipy 'reflect' is (d c b a | a b c d | d c b a)
+      while (idx < 0 || idx >= n) {
+        if (idx < 0) idx = -idx - 1;
+        if (idx >= n) idx = 2 * n - idx - 1;
+      }
+      acc += x[idx] * k[j + r];
+    }
+    out[i] = acc;
+  }
+  return out;
+}
+
+function percentile(arr, p) {
+  const a = Float64Array.from(arr).sort();
+  const i = (a.length - 1) * p / 100;
+  const lo = Math.floor(i), hi = Math.ceil(i);
+  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+}
+
+function mean(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s / a.length; }
+function std(a) {
+  const m = mean(a); let s = 0;
+  for (let i = 0; i < a.length; i++) { const d = a[i] - m; s += d * d; }
+  return Math.sqrt(s / a.length);
+}
+
+/* -------------------------------------------------------------------- FFT */
+
+/** In-place iterative radix-2 Cooley-Tukey. re/im are Float64Array of length n
+    (a power of two). */
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {          // bit-reversal permutation
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      let t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const ur = re[i + k], ui = im[i + k];
+        const vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+        const vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+        re[i + k] = ur + vr; im[i + k] = ui + vi;
+        re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+        const ncr = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr; cr = ncr;
+      }
+    }
+  }
+}
+
+/** Power spectrum of a real signal zero-padded to `nfft`. Returns the
+    non-negative-frequency half, matching numpy's rfft. */
+function realPower(x, nfft) {
+  let N = 1; while (N < nfft) N <<= 1;
+  const re = new Float64Array(N), im = new Float64Array(N);
+  for (let i = 0; i < x.length && i < N; i++) re[i] = x[i];
+  fft(re, im);
+  const m = (N >> 1) + 1;
+  const P = new Float64Array(m);
+  for (let i = 0; i < m; i++) P[i] = re[i] * re[i] + im[i] * im[i];
+  return { P, N };
+}
+
+/* ------------------------------------------------------------ part pitch */
+
+/**
+ * Spacing of ONE part, in pixels, via harmonic product spectrum.
+ *
+ * A part rarely shows a single bright line, so the plain spectrum peaks at a
+ * half or a third of the real spacing. HPS multiplies the spectrum by
+ * decimated copies of itself: a true fundamental lines up with all its own
+ * harmonics and reinforces, while a harmonic mistaken for the fundamental has
+ * nothing at half its frequency and collapses. Audio pitch detection uses the
+ * same trick against the identical "octave error".
+ */
+function fundamentalPitch(d, nHarm = 5, loPx = 6, hiPx = 400) {
+  const n = d.length;
+  const m = mean(d);
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const han = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
+    w[i] = (d[i] - m) * han;
+  }
+  const target = n * 4;
+  const { P, N } = realPower(w, target);
+  const prod = Float64Array.from(P);
+  for (let h = 2; h <= nHarm; h++) {
+    const dec = new Float64Array(P.length);
+    for (let i = 0, j = 0; i < P.length; i += h, j++) dec[j] = P[i];
+    for (let i = 0; i < prod.length; i++) prod[i] *= Math.pow(dec[i] + 1e-12, 1 / h);
+  }
+  const klo = Math.max(1, Math.floor(N / (hiPx * SS)));
+  const khi = Math.min(prod.length - 1, Math.floor(N / (loPx * SS)));
+  if (khi <= klo) return null;
+  let best = klo, bv = -Infinity;
+  for (let k = klo; k < khi; k++) if (prod[k] > bv) { bv = prod[k]; best = k; }
+  return N / best / SS;
+}
+
+/* ------------------------------------------------------------ peak finding */
+
+/** Local maxima, taking the midpoint of any plateau (matches scipy). */
+function localMaxima(y) {
+  const out = [];
+  let i = 1;
+  const n = y.length;
+  while (i < n - 1) {
+    if (y[i - 1] < y[i]) {
+      let j = i;
+      while (j < n - 1 && y[j + 1] === y[i]) j++;
+      if (j < n - 1 && y[j + 1] < y[i]) out.push((i + j) >> 1);
+      i = j + 1;
+    } else i++;
+  }
+  return out;
+}
+
+/** Topographic prominence, as scipy computes it. */
+function prominences(y, peaks) {
+  const out = new Float64Array(peaks.length);
+  for (let p = 0; p < peaks.length; p++) {
+    const i = peaks[p], h = y[i];
+    let lmin = h, j = i;
+    while (j >= 0 && y[j] <= h) { if (y[j] < lmin) lmin = y[j]; j--; }
+    let rmin = h; j = i;
+    while (j < y.length && y[j] <= h) { if (y[j] < rmin) rmin = y[j]; j++; }
+    out[p] = h - Math.max(lmin, rmin);
+  }
+  return out;
+}
+
+/** Keep the tallest peak in any `distance` window, as scipy does. */
+function selectByDistance(peaks, heights, distance) {
+  const order = peaks.map((_, i) => i).sort((a, b) => heights[b] - heights[a]);
+  const keep = new Uint8Array(peaks.length).fill(1);
+  for (const i of order) {
+    if (!keep[i]) continue;
+    for (let j = i - 1; j >= 0 && peaks[i] - peaks[j] < distance; j--) keep[j] = 0;
+    for (let j = i + 1; j < peaks.length && peaks[j] - peaks[i] < distance; j++) keep[j] = 0;
+  }
+  return peaks.filter((_, i) => keep[i]);
+}
+
+function findPeaks(y, minProminence, distance) {
+  let peaks = localMaxima(y);
+  if (!peaks.length) return [];
+  const pr = prominences(y, peaks);
+  peaks = peaks.filter((_, i) => pr[i] >= minProminence);
+  if (!peaks.length) return [];
+  if (distance > 1) peaks = selectByDistance(peaks, peaks.map(i => y[i]), distance);
+  return peaks;
+}
+
+/* ------------------------------------------------------------- sampling */
+
+/** Average intensity along p0->p1, widened `band` pixels sideways.
+    Averaging across the band is what kills surface speckle. */
+function sampleProfile(gray, W, H, p0, p1, band = 25) {
+  const vx = p1.x - p0.x, vy = p1.y - p0.y;
+  const L = Math.hypot(vx, vy);
+  const n = Math.max(8, Math.floor(L * SS));
+  const ux = vx / L, uy = vy / L;
+  const px = -uy, py = ux;
+  const half = band >> 1;
+  const out = new Float64Array(n);
+  const at = (x, y) => {                              // bilinear, edge-clamped
+    x = Math.min(W - 1, Math.max(0, x));
+    y = Math.min(H - 1, Math.max(0, y));
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const x1 = Math.min(W - 1, x0 + 1), y1 = Math.min(H - 1, y0 + 1);
+    const fx = x - x0, fy = y - y0;
+    const a = gray[y0 * W + x0], b = gray[y0 * W + x1];
+    const c = gray[y1 * W + x0], e = gray[y1 * W + x1];
+    return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + e * fx * fy;
+  };
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const bx = p0.x + t * vx, by = p0.y + t * vy;
+    let acc = 0;
+    for (let o = -half; o <= half; o++) acc += at(bx + o * px, by + o * py);
+    out[i] = acc / (2 * half + 1);
+  }
+  return { prof: out, L, n };
+}
+
+/** Flatten the lighting gradient, then normalise by LOCAL contrast so one
+    threshold means the same thing at both ends of the line. */
+function detrend(raw) {
+  const s = gaussian1d(raw, 1.4);
+  const bg = gaussian1d(s, 45);
+  const d = new Float64Array(s.length);
+  for (let i = 0; i < s.length; i++) d[i] = s[i] - bg[i];
+  const sq = new Float64Array(d.length);
+  for (let i = 0; i < d.length; i++) sq[i] = d[i] * d[i];
+  const env = gaussian1d(sq, 45);
+  const rough = new Float64Array(d.length);
+  for (let i = 0; i < d.length; i++) rough[i] = Math.sqrt(env[i]);
+  const floor = percentile(rough, 25) * 0.5 + 1e-6;
+  const out = new Float64Array(d.length);
+  for (let i = 0; i < d.length; i++) out[i] = d[i] / Math.max(rough[i], floor);
+  return out;
+}
+
+/* ---------------------------------------------------------------- count */
+
+/**
+ * Count parts crossed by the segment p0->p1.
+ * `gray` is a Float32/Float64Array of luminance, W*H, already at working size.
+ */
+function countAlongLine(gray, W, H, p0, p1, opts = {}) {
+  const band = opts.band ?? 25;
+  const sens = opts.sens ?? 1.0;
+  const { prof, L, n } = sampleProfile(gray, W, H, p0, p1, band);
+  const d = detrend(prof);
+
+  // A caller counting one stack across several photos passes the pitch it
+  // already measured. A short swipe holds too few repeats to measure spacing
+  // reliably — on a split test run, per-segment estimates came out at 124px
+  // where the true pitch was 49, and the total fell from 36 to 25.
+  // Always measure, even when the caller supplies a pitch: the comparison is
+  // what catches "saved a section, then photographed a different part".
+  let measuredPx = fundamentalPitch(d);
+  let pitchPx = opts.pitchPx || measuredPx;
+  if (!pitchPx || !isFinite(pitchPx)) {
+    const rough = findPeaks(d, std(d) * 0.3, 2);
+    if (rough.length > 4) {
+      const gaps = [];
+      for (let i = 1; i < rough.length; i++) gaps.push(rough[i] - rough[i - 1]);
+      gaps.sort((a, b) => a - b);
+      pitchPx = gaps[gaps.length >> 1] / SS;
+    } else pitchPx = 4;
+  }
+  const pitch = pitchPx * SS;
+
+  // Peak detection cannot see an extremum at index 0 or n-1, so a part sitting
+  // exactly at the end of the swipe is structurally invisible — a systematic
+  // -1 on every photo. Pad with a low value: an end part becomes a real peak,
+  // without inventing a neighbour that the spacing rule would then suppress.
+  const pad = Math.max(3, Math.round(pitch * 0.75));
+  const floor = percentile(d, 5);
+  const dp = new Float64Array(d.length + 2 * pad).fill(floor);
+  dp.set(d, pad);
+
+  const pk = findPeaks(dp, std(d) * 0.40 / sens, Math.max(2, Math.round(pitch * 0.65)))
+    .map(i => i - pad)
+    .filter(i => i >= 0 && i < n);
+
+  return {
+    count: pk.length,
+    positions: pk.map(i => i / (n - 1)),   // 0..1 along the swipe
+    pitchPx,                               // the spacing actually used
+    measuredPx,                            // what this swipe alone suggests
+    lengthPx: L, samples: n
+  };
+}
+
+/* --------------------------------------------------------- image loading */
+
+/** Draw an image into a canvas at the working width and return luminance. */
+function toWorkingGrey(img, workW = WORK_W) {
+  const scale = img.width > workW ? workW / img.width : 1;
+  const W = Math.max(1, Math.round(img.width * scale));
+  const H = Math.max(1, Math.round(img.height * scale));
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(img, 0, 0, W, H);
+  const px = g.getImageData(0, 0, W, H).data;
+  const grey = new Float64Array(W * H);
+  for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+    // Rec.601 luma, matching PIL's "L" conversion
+    grey[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+  }
+  return { grey, W, H, scale };
+}
+
+if (typeof window !== 'undefined') {
+  window.StackEngine = {
+    SS, WORK_W, countAlongLine, toWorkingGrey, sampleProfile, detrend,
+    fundamentalPitch, findPeaks, gaussian1d, std, percentile
+  };
+}
+
+</script>
+<script>
+/* ===========================================================================
+   Swipe Count — UI layer. The engine does the measuring; this decides what
+   the line is, shows every decision as a tick you can correct, and keeps a
+   running total across sections of a long stack.
+   =========================================================================== */
+"use strict";
+
+const $ = s => document.querySelector(s);
+const el = {
+  total: $('#total'), totalLab: $('#totalLab'), stage: $('#stage'), wrap: $('#wrap'),
+  view: $('#view'), empty: $('#empty'), hint: $('#hint'), busy: $('#busy'),
+  fileCam: $('#fileCam'), fileLib: $('#fileLib'), sheet: $('#sheet'),
+  sheetBody: $('#sheetBody'), secBar: $('#secBar'), sens: $('#sensVal')
+};
+
+const LS = { sens: 'swipe.sens', work: 'swipe.work' };
+const get = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
+const set = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { } };
+
+const S = {
+  img: null,            // the drawn photo (canvas) at working size
+  grey: null, W: 0, H: 0,
+  line: null,           // {p0:{x,y}, p1:{x,y}} in working pixels
+  marks: [],            // [{t, src}] t = 0..1 along the line
+  pitchPx: null,        // locked after the first section
+  lockPitch: true,
+  sections: [],         // [{count, manual}] committed sections
+  sens: parseFloat(get(LS.sens, '1')) || 1,
+  drag: null,
+  busy: false
+};
+
+/* ---------------------------------------------------------- photo loading */
+async function loadFile(file) {
+  if (!file) return;
+  showBusy('Reading photo…');
+  try {
+    let src;
+    try { src = await createImageBitmap(file); }
+    catch (e) {
+      src = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i); i.onerror = () => rej(new Error('Could not read that image.'));
+        i.src = URL.createObjectURL(file);
+      });
+    }
+    const workW = parseInt(get(LS.work, String(StackEngine.WORK_W)), 10) || StackEngine.WORK_W;
+    const { grey, W, H } = StackEngine.toWorkingGrey(src, workW);
+
+    // Keep a drawn copy at the SAME size the engine measured, so a swipe on
+    // screen and a measurement in the engine use one coordinate system.
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    c.getContext('2d').drawImage(src, 0, 0, W, H);
+    if (src.close) src.close();
+
+    S.img = c; S.grey = grey; S.W = W; S.H = H;
+    S.line = null; S.marks = [];
+    el.view.width = W; el.view.height = H;
+    el.empty.style.display = 'none';
+    fitToStage(); draw(); updateTotal(); setHint();
+  } catch (e) {
+    openError(e.message || String(e));
+  } finally { hideBusy(); }
+}
+el.fileCam.addEventListener('change', e => loadFile(e.target.files[0]));
+el.fileLib.addEventListener('change', e => loadFile(e.target.files[0]));
+$('#shoot').onclick = $('#shootEmpty').onclick = () => el.fileCam.click();
+$('#pick').onclick = $('#pickEmpty').onclick = () => el.fileLib.click();
+
+/* ------------------------------------------------------------ pan / zoom */
+const V = { s: 1, x: 0, y: 0 };
+function applyView() { el.wrap.style.transform = `translate(${V.x}px,${V.y}px) scale(${V.s})`; }
+function fitToStage() {
+  const r = el.stage.getBoundingClientRect();
+  const s = Math.min(r.width / S.W, r.height / S.H) * 0.98;
+  V.s = s; V.x = (r.width - S.W * s) / 2; V.y = (r.height - S.H * s) / 2;
+  applyView();
+}
+window.addEventListener('resize', () => { if (S.img) fitToStage(); });
+
+function toImage(cx, cy) {
+  const r = el.stage.getBoundingClientRect();
+  return { x: (cx - r.left - V.x) / V.s, y: (cy - r.top - V.y) / V.s };
+}
+
+const P = new Map();
+let pinch = null, tapC = null;
+
+el.stage.addEventListener('pointerdown', e => {
+  if (!S.img || S.busy) return;
+  el.stage.setPointerCapture(e.pointerId);
+  P.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (P.size === 1) {
+    tapC = { x: e.clientX, y: e.clientY, t: Date.now(), moved: 0 };
+    S.drag = { p0: toImage(e.clientX, e.clientY), p1: toImage(e.clientX, e.clientY) };
+  } else if (P.size === 2) {
+    tapC = null; S.drag = null;                       // two fingers is never a swipe
+    const [a, b] = [...P.values()];
+    pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
+              s: V.s, vx: V.x, vy: V.y };
+    draw();
+  }
+});
+
+el.stage.addEventListener('pointermove', e => {
+  if (!P.has(e.pointerId)) return;
+  const prev = P.get(e.pointerId);
+  P.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (P.size === 1) {
+    if (tapC) tapC.moved += Math.abs(e.clientX - prev.x) + Math.abs(e.clientY - prev.y);
+    if (S.drag) { S.drag.p1 = toImage(e.clientX, e.clientY); draw(); }
+  } else if (P.size === 2 && pinch) {
+    const [a, b] = [...P.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+    const k = Math.max(.1, Math.min(16, pinch.s * (d / pinch.d)));
+    const r = el.stage.getBoundingClientRect();
+    V.x = cx - r.left - (pinch.cx - r.left - pinch.vx) * (k / pinch.s);
+    V.y = cy - r.top - (pinch.cy - r.top - pinch.vy) * (k / pinch.s);
+    V.s = k; applyView();
+  }
+});
+
+function endPointer(e) {
+  if (!P.has(e.pointerId)) return;
+  P.delete(e.pointerId);
+  if (P.size < 2) pinch = null;
+  if (P.size !== 0) { S.drag = null; return; }
+
+  const drag = S.drag; S.drag = null;
+  const tap = tapC; tapC = null;
+
+  if (tap && Date.now() - tap.t < 450 && tap.moved < 12) { handleTap(tap.x, tap.y); return; }
+  if (drag) {
+    const len = Math.hypot(drag.p1.x - drag.p0.x, drag.p1.y - drag.p0.y);
+    // A swipe shorter than this is a slip, not an instruction.
+    if (len > Math.min(S.W, S.H) * 0.08) { S.line = drag; runCount(); }
+    else draw();
+  }
+}
+el.stage.addEventListener('pointerup', endPointer);
+el.stage.addEventListener('pointercancel', endPointer);
+
+/* ------------------------------------------------------------- tap to fix */
+function lineGeom() {
+  const { p0, p1 } = S.line;
+  const vx = p1.x - p0.x, vy = p1.y - p0.y;
+  const L = Math.hypot(vx, vy);
+  return { p0, p1, vx, vy, L, ux: vx / L, uy: vy / L };
+}
+function markPoint(t) {
+  const g = lineGeom();
+  return { x: g.p0.x + t * g.vx, y: g.p0.y + t * g.vy };
+}
+
+function handleTap(cx, cy) {
+  if (!S.line) return;
+  const p = toImage(cx, cy);
+  const g = lineGeom();
+  // The hit radius must stay under half the part spacing. Any larger and a tap
+  // meant to ADD a tick between two parts always lands on a neighbour instead,
+  // so deleting one and tapping again just deletes another. Below a usable
+  // finger size on screen, editing is refused rather than made unreliable.
+  const hit = (S.pitchPx || 20) * 0.45;
+  if (hit * V.s < 13) { toast('Pinch to zoom in, then tap to fix a tick'); return; }
+
+  let bi = -1, bd = Infinity;
+  S.marks.forEach((m, i) => {
+    const q = markPoint(m.t);
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bd) { bd = d; bi = i; }
+  });
+  if (bi >= 0 && bd <= hit) { S.marks.splice(bi, 1); updateTotal(); draw(); return; }
+
+  // project the tap onto the line; only accept taps that are actually near it
+  const t = ((p.x - g.p0.x) * g.vx + (p.y - g.p0.y) * g.vy) / (g.L * g.L);
+  const perp = Math.abs((p.x - g.p0.x) * -g.uy + (p.y - g.p0.y) * g.ux);
+  if (t < 0 || t > 1 || perp > hit * 2.5) return;
+  S.marks.push({ t, src: 'me' });
+  S.marks.sort((a, b) => a.t - b.t);
+  updateTotal(); draw();
+}
+
+/* ----------------------------------------------------------------- count */
+async function runCount() {
+  if (!S.line || S.busy) return;
+  S.busy = true; showBusy('Counting…');
+  await new Promise(r => setTimeout(r, 16));          // let the spinner paint
+  try {
+    const r = StackEngine.countAlongLine(S.grey, S.W, S.H, S.line.p0, S.line.p1,
+      { sens: S.sens, pitchPx: (S.lockPitch && S.pitchPx) ? S.pitchPx : null });
+    if (!S.pitchPx || !S.lockPitch) S.pitchPx = r.pitchPx;
+    S.marks = r.positions.map(t => ({ t, src: 'ai' }));
+    updateTotal(); draw();
+
+    // Locking the spacing is right across sections of ONE stack and wrong the
+    // moment the part changes. Rather than silently using a stale figure, say so.
+    const off = (S.lockPitch && r.measuredPx && S.pitchPx)
+      ? Math.abs(r.measuredPx - S.pitchPx) / S.pitchPx : 0;
+    if (off > 0.25) {
+      S.pitchMismatch = r.measuredPx;
+      warn(`This swipe reads ${r.measuredPx.toFixed(0)}px between parts, but the ` +
+           `spacing is locked at ${S.pitchPx.toFixed(0)}px. Different part? ` +
+           `Tap here to re-measure.`);
+    } else { S.pitchMismatch = null; setHint(); }
+  } catch (e) {
+    openError(e.message || String(e));
+  } finally { S.busy = false; hideBusy(); }
+}
+
+function bumpSens(delta) {
+  S.sens = Math.max(0.4, Math.min(2.5, +(S.sens + delta).toFixed(2)));
+  set(LS.sens, String(S.sens));
+  el.sens.textContent = S.sens.toFixed(2).replace(/0$/, '');
+  if (S.line) runCount();
+}
+$('#sensDown').onclick = () => bumpSens(-0.1);
+$('#sensUp').onclick = () => bumpSens(+0.1);
+
+/* -------------------------------------------------------------- sections */
+$('#addSection').onclick = () => {
+  if (!S.marks.length) return;
+  S.sections.push({ count: S.marks.length });
+  S.line = null; S.marks = [];
+  updateTotal(); draw(); setHint();
+  toast(`Section saved. Take the next photo — the running total keeps counting.`);
+};
+$('#clearAll').onclick = () => {
+  S.sections = []; S.marks = []; S.line = null; S.pitchPx = null;
+  updateTotal(); draw(); setHint();
+};
+
+function updateTotal() {
+  const here = S.marks.length;
+  const prior = S.sections.reduce((a, s) => a + s.count, 0);
+  el.total.textContent = S.img ? (prior + here) : '—';
+  const manual = S.marks.filter(m => m.src === 'me').length;
+  const bits = [];
+  if (S.sections.length) bits.push(`${S.sections.length} saved + ${here} here`);
+  if (manual) bits.push(`${manual} by hand`);
+  el.totalLab.textContent = bits.length ? bits.join(' · ') : 'count';
+  el.secBar.hidden = !S.sections.length;
+  el.secBar.textContent = S.sections.length
+    ? 'sections: ' + S.sections.map(s => s.count).join(' + ') + (here ? ` + ${here}` : '')
+    : '';
+  $('#addSection').disabled = !S.marks.length;
+}
+
+/* ------------------------------------------------------------------ draw */
+function draw() {
+  const c = el.view, g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (S.img) g.drawImage(S.img, 0, 0);
+
+  const live = S.drag;
+  if (live) {
+    g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = Math.max(2, 3 / V.s);
+    g.setLineDash([8 / V.s, 8 / V.s]);
+    g.beginPath(); g.moveTo(live.p0.x, live.p0.y); g.lineTo(live.p1.x, live.p1.y); g.stroke();
+    g.setLineDash([]);
+    return;
+  }
+  if (!S.line) return;
+
+  const g2 = lineGeom();
+  const tick = Math.max(10, (S.pitchPx || 20) * 0.75);
+  const lw = Math.max(1.5, 2.2 / V.s);
+
+  g.strokeStyle = 'rgba(255,60,60,.75)'; g.lineWidth = lw;
+  g.beginPath(); g.moveTo(g2.p0.x, g2.p0.y); g.lineTo(g2.p1.x, g2.p1.y); g.stroke();
+
+  const showNum = V.s * (S.pitchPx || 20) > 26;
+  S.marks.forEach((m, i) => {
+    const q = markPoint(m.t);
+    const nx = -g2.uy * tick, ny = g2.ux * tick;
+    g.lineWidth = lw * 3.4; g.strokeStyle = 'rgba(4,8,14,.8)';
+    g.beginPath(); g.moveTo(q.x - nx, q.y - ny); g.lineTo(q.x + nx, q.y + ny); g.stroke();
+    g.lineWidth = lw * 1.7;
+    g.strokeStyle = m.src === 'me' ? '#ffb454' : '#4ce39a';
+    g.beginPath(); g.moveTo(q.x - nx, q.y - ny); g.lineTo(q.x + nx, q.y + ny); g.stroke();
+    if (showNum) {
+      const fs = Math.max(9, tick * 0.62);
+      g.font = `600 ${fs}px -apple-system,system-ui,sans-serif`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      const lx = q.x + nx * 1.5, ly = q.y + ny * 1.5;
+      g.lineWidth = fs * 0.3; g.strokeStyle = 'rgba(4,8,14,.85)';
+      g.strokeText(i + 1, lx, ly);
+      g.fillStyle = '#fff'; g.fillText(i + 1, lx, ly);
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ chrome */
+function setHint() {
+  el.hint.className = 'hint';
+  if (!S.img) return;
+  el.hint.textContent = !S.line
+    ? 'Swipe one finger across the parts — two fingers to pan and zoom'
+    : 'Tap a tick to remove · tap the line to add · swipe again to redo';
+}
+function toast(msg) { el.hint.textContent = msg; el.hint.className = 'hint'; setTimeout(setHint, 5000); }
+function warn(msg) { el.hint.textContent = msg; el.hint.className = 'hint warn'; }
+el.hint.addEventListener('click', () => {
+  if (!S.pitchMismatch) return;
+  S.pitchPx = S.pitchMismatch; S.pitchMismatch = null;
+  runCount();
+});
+function showBusy(t) { el.busy.textContent = t; el.busy.hidden = false; }
+function hideBusy() { el.busy.hidden = true; }
+
+$('#saveBtn').onclick = async () => {
+  if (!S.img) return;
+  const c = document.createElement('canvas');
+  c.width = S.W; c.height = S.H;
+  const g = c.getContext('2d');
+  g.drawImage(el.view, 0, 0);
+  const n = S.sections.reduce((a, s) => a + s.count, 0) + S.marks.length;
+  const fs = Math.round(Math.min(S.W, S.H) * 0.075), pad = Math.round(Math.min(S.W, S.H) * 0.035);
+  g.font = `700 ${fs}px -apple-system,system-ui,sans-serif`;
+  const w = g.measureText(String(n)).width;
+  g.fillStyle = 'rgba(6,10,16,.8)';
+  g.beginPath(); g.roundRect(pad, pad, w + fs, fs * 1.5, fs * 0.26); g.fill();
+  g.fillStyle = '#4ce39a'; g.textBaseline = 'middle';
+  g.fillText(String(n), pad + fs * 0.5, pad + fs * 0.78);
+  const name = `count-${n}.jpg`;
+  c.toBlob(async blob => {
+    const file = new File([blob], name, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; }
+      catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }, 'image/jpeg', 0.9);
+};
+
+$('#cfgBtn').onclick = openSettings;
+el.sheet.addEventListener('click', e => { if (e.target === el.sheet) el.sheet.classList.remove('on'); });
+
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function openSettings() {
+  const work = get(LS.work, String(StackEngine.WORK_W));
+  el.sheetBody.innerHTML = `
+    <h2>Settings</h2>
+    <div class="sub">Everything runs on this phone. No account, no network, no cost.</div>
+
+    <label>Part spacing</label>
+    <div class="kv"><span>Measured</span><b>${S.pitchPx ? S.pitchPx.toFixed(1) + ' px' : '—'}</b></div>
+    <div class="row2" style="margin-top:10px">
+      <button class="ghost ${S.lockPitch ? 'on' : ''}" id="lockOn">Lock after first swipe</button>
+      <button class="ghost ${S.lockPitch ? '' : 'on'}" id="lockOff">Re-measure each time</button>
+    </div>
+    <div class="note">Keep it locked when counting one stack across several photos: a short
+    swipe doesn't contain enough repeats to measure the spacing reliably, and gets it wrong
+    by a factor of two or three. Re-measure only when you switch to a different part.</div>
+
+    <label for="ww">Working width</label>
+    <input type="number" id="ww" value="${esc(work)}" min="800" max="6000" step="100">
+    <div class="note">The photo is shrunk to this width before measuring. Counter-intuitive but
+    load-bearing: at full resolution the saw marks on cut faces are themselves a strong regular
+    pattern and get counted as parts. 2200 was calibrated against four hand-counted photos —
+    if your parts are much finer or coarser, this is the knob to turn.</div>
+
+    <div class="row">
+      <button class="ghost" id="clr2">Clear everything</button>
+      <button class="primary" id="ok">Done</button>
+    </div>`;
+  const bodyq = s => el.sheetBody.querySelector(s);
+  bodyq('#lockOn').onclick = () => { S.lockPitch = true; openSettings(); };
+  bodyq('#lockOff').onclick = () => { S.lockPitch = false; openSettings(); };
+  bodyq('#clr2').onclick = () => { $('#clearAll').click(); el.sheet.classList.remove('on'); };
+  bodyq('#ok').onclick = () => {
+    const v = parseInt(bodyq('#ww').value, 10);
+    if (v >= 800 && v <= 6000) set(LS.work, String(v));
+    el.sheet.classList.remove('on');
+  };
+  el.sheet.classList.add('on');
+}
+
+function openError(msg) {
+  el.sheetBody.innerHTML = `
+    <h2>Couldn't do that</h2>
+    <div class="sub">Your photo and any ticks are still here.</div>
+    <div class="err">${esc(msg)}</div>
+    <div class="row"><button class="primary" id="ok2">OK</button></div>`;
+  el.sheetBody.querySelector('#ok2').onclick = () => el.sheet.classList.remove('on');
+  el.sheet.classList.add('on');
+}
+
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+    this.beginPath(); this.moveTo(x + r, y);
+    this.arcTo(x + w, y, x + w, y + h, r); this.arcTo(x + w, y + h, x, y + h, r);
+    this.arcTo(x, y + h, x, y, r); this.arcTo(x, y, x + w, y, r);
+    this.closePath(); return this;
+  };
+}
+document.addEventListener('gesturestart', e => e.preventDefault());
+el.sens.textContent = S.sens.toFixed(2).replace(/0$/, '');
+updateTotal();
+
+</script>
+</body>
+</html>
