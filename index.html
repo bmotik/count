@@ -78,6 +78,16 @@
     font-size:11.5px;text-align:center;padding:9px 14px;line-height:1.4}
   .hint.warn{background:#33260f;color:var(--warn);font-weight:500}
 
+  #tools{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
+    display:flex;align-items:center;gap:7px;padding:9px 12px 0;overflow-x:auto}
+  #tools .lab{font:500 12px/1 system-ui;color:var(--dim);white-space:nowrap;
+    margin-right:2px;font-variant-numeric:tabular-nums}
+  #tools .lab b{color:var(--ink);font-weight:600}
+  #tools button{flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);
+    color:var(--ink);border-radius:9px;font:600 12.5px/1 system-ui;padding:9px 11px}
+  #tools button:active{background:#2f3846}
+  #tools button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+
   footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
     padding:10px 12px calc(var(--safe-b) + 10px);display:flex;gap:8px;align-items:center}
   footer .grow{flex:1}
@@ -131,6 +141,13 @@
     <button class="ghost" id="pickEmpty">Choose from library</button>
   </div>
   <div id="busy" hidden>Working…</div>
+</div>
+
+<div id="tools" hidden>
+  <span class="lab">one part &asymp;&nbsp;<b id="pitchVal">—</b></span>
+  <button id="pHalf">&divide;2</button>
+  <button id="pDouble">&times;2</button>
+  <button id="pSet">set by tapping</button>
 </div>
 
 <div class="hint" id="hint">Take a photo of the stack edge to begin</div>
@@ -493,7 +510,6 @@ if (typeof window !== 'undefined') {
     fundamentalPitch, findPeaks, gaussian1d, std, percentile
   };
 }
-
 </script>
 <script>
 /* ===========================================================================
@@ -508,7 +524,8 @@ const el = {
   total: $('#total'), totalLab: $('#totalLab'), stage: $('#stage'), wrap: $('#wrap'),
   view: $('#view'), empty: $('#empty'), hint: $('#hint'), busy: $('#busy'),
   fileCam: $('#fileCam'), fileLib: $('#fileLib'), sheet: $('#sheet'),
-  sheetBody: $('#sheetBody'), secBar: $('#secBar'), sens: $('#sensVal')
+  sheetBody: $('#sheetBody'), secBar: $('#secBar'), sens: $('#sensVal'),
+  tools: $('#tools'), pitchVal: $('#pitchVal')
 };
 
 const LS = { sens: 'swipe.sens', work: 'swipe.work' };
@@ -525,7 +542,9 @@ const S = {
   sections: [],         // [{count, manual}] committed sections
   sens: parseFloat(get(LS.sens, '1')) || 1,
   drag: null,
-  busy: false
+  busy: false,
+  setSize: false,      // waiting for two taps that define one part
+  sizeFirst: null      // position along the line of the first of those taps
 };
 
 /* ---------------------------------------------------------- photo loading */
@@ -658,6 +677,26 @@ function handleTap(cx, cy) {
   if (!S.line) return;
   const p = toImage(cx, cy);
   const g = lineGeom();
+
+  // Setting the part size by example. No statistic can resolve this: a strip of
+  // keyboard genuinely supports "4 keys" and "7 edges" equally well, and the
+  // same is true of parts carrying stamped marks or weld beads. Only the person
+  // looking at it knows which repeat is one part, so they point at it.
+  if (S.setSize) {
+    const t = ((p.x - g.p0.x) * g.vx + (p.y - g.p0.y) * g.vy) / (g.L * g.L);
+    if (S.sizeFirst === null) {
+      S.sizeFirst = t; draw();
+      toast('Now tap the middle of the part next to it');
+      return;
+    }
+    const px = Math.abs(t - S.sizeFirst) * g.L;
+    S.setSize = false; S.sizeFirst = null;
+    $('#pSet').classList.remove('on');
+    if (px < 4) { toast('Those were too close together — try again'); return; }
+    S.pitchPx = px; S.lockPitch = true;
+    runCount();
+    return;
+  }
   // The hit radius must stay under half the part spacing. Any larger and a tap
   // meant to ADD a tick between two parts always lands on a neighbour instead,
   // so deleting one and tapping again just deletes another. Below a usable
@@ -718,6 +757,22 @@ function bumpSens(delta) {
 $('#sensDown').onclick = () => bumpSens(-0.1);
 $('#sensUp').onclick = () => bumpSens(+0.1);
 
+function scalePitch(k) {
+  if (!S.pitchPx || !S.line) return;
+  S.pitchPx = S.pitchPx * k; S.lockPitch = true;
+  runCount();
+}
+$('#pHalf').onclick = () => scalePitch(0.5);
+$('#pDouble').onclick = () => scalePitch(2);
+$('#pSet').onclick = () => {
+  if (!S.line) return;
+  S.setSize = !S.setSize; S.sizeFirst = null;
+  $('#pSet').classList.toggle('on', S.setSize);
+  if (S.setSize) toast('Tap the middle of one part, then the one next to it');
+  else setHint();
+  draw();
+};
+
 /* -------------------------------------------------------------- sections */
 $('#addSection').onclick = () => {
   if (!S.marks.length) return;
@@ -740,6 +795,8 @@ function updateTotal() {
   if (S.sections.length) bits.push(`${S.sections.length} saved + ${here} here`);
   if (manual) bits.push(`${manual} by hand`);
   el.totalLab.textContent = bits.length ? bits.join(' · ') : 'count';
+  el.tools.hidden = !S.line;
+  el.pitchVal.textContent = S.pitchPx ? Math.round(S.pitchPx) + ' px' : '—';
   el.secBar.hidden = !S.sections.length;
   el.secBar.textContent = S.sections.length
     ? 'sections: ' + S.sections.map(s => s.count).join(' + ') + (here ? ` + ${here}` : '')
@@ -770,6 +827,15 @@ function draw() {
   g.strokeStyle = 'rgba(255,60,60,.75)'; g.lineWidth = lw;
   g.beginPath(); g.moveTo(g2.p0.x, g2.p0.y); g.lineTo(g2.p1.x, g2.p1.y); g.stroke();
 
+  if (S.setSize && S.sizeFirst !== null) {
+    const q = markPoint(S.sizeFirst);
+    const t2 = Math.max(10, (S.pitchPx || 20) * 1.1);
+    g.strokeStyle = '#ffb454'; g.lineWidth = lw * 2.6;
+    g.beginPath();
+    g.moveTo(q.x + g2.uy * t2, q.y - g2.ux * t2);
+    g.lineTo(q.x - g2.uy * t2, q.y + g2.ux * t2);
+    g.stroke();
+  }
   const showNum = V.s * (S.pitchPx || 20) > 26;
   S.marks.forEach((m, i) => {
     const q = markPoint(m.t);
@@ -795,6 +861,8 @@ function draw() {
 function setHint() {
   el.hint.className = 'hint';
   if (!S.img) return;
+  if (S.setSize) { el.hint.textContent =
+    'Tap the middle of one part, then the one next to it'; return; }
   el.hint.textContent = !S.line
     ? 'Swipe one finger across the parts — two fingers to pan and zoom'
     : 'Tap a tick to remove · tap the line to add · swipe again to redo';
@@ -902,7 +970,6 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
 document.addEventListener('gesturestart', e => e.preventDefault());
 el.sens.textContent = S.sens.toFixed(2).replace(/0$/, '');
 updateTotal();
-
 </script>
 </body>
 </html>
