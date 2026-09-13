@@ -76,14 +76,32 @@
   #busy{position:absolute;inset:0;display:grid;place-items:center;z-index:20;
     background:rgba(7,10,14,.82);color:var(--dim);font:500 14px/1 system-ui}
 
+  #cam{position:absolute;inset:0;z-index:25;background:#000;display:flex;
+    flex-direction:column;align-items:center;justify-content:center}
+  #camView{width:100%;height:100%;object-fit:contain;background:#000}
+  .camBar{position:absolute;left:0;right:0;bottom:0;padding:16px 18px 26px;
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:linear-gradient(transparent,rgba(0,0,0,.75))}
+  #camShoot{width:66px;height:66px;border-radius:50%;border:4px solid #fff;
+    background:var(--accent);flex:0 0 auto}
+  #camShoot:active{filter:brightness(.85)}
+  #camShoot[disabled]{opacity:.4}
+  .camNote{font:500 11.5px/1.3 system-ui;color:#cfd6df;max-width:9rem;text-align:right}
+
+  #srcTog{display:flex;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;margin-right:2px}
+  #srcTog button{background:none;border:0;color:var(--dim);
+    font:600 11.5px/1 system-ui;padding:9px 10px;white-space:nowrap}
+  #srcTog button.on{background:var(--accent);color:var(--accent-ink)}
+
   .hint{flex:0 0 auto;background:var(--panel);color:var(--dim);
     font-size:11.5px;text-align:center;padding:9px 14px;line-height:1.4}
   .hint.warn{background:#33260f;color:var(--warn);font-weight:500}
 
   #tools{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
     display:flex;align-items:center;gap:7px;padding:9px 12px 0;overflow-x:auto}
-  #tools .lab{font:500 12px/1 system-ui;color:var(--dim);white-space:nowrap;
-    margin-right:2px;font-variant-numeric:tabular-nums}
+  #tools .lab{font:600 12.5px/1 system-ui;color:var(--dim);white-space:nowrap;
+    margin-right:4px}
   #tools .lab b{color:var(--ink);font-weight:600}
   #tools button{flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);
     color:var(--ink);border-radius:9px;font:600 12.5px/1 system-ui;padding:9px 11px}
@@ -141,16 +159,27 @@
     <p>Photograph the edge, drag one finger across the parts, and every part it finds gets a tick you can correct.</p>
     <button class="primary" id="shootEmpty"><svg viewBox="0 0 24 24" style="width:19px;height:19px"><path d="M3 8.4h3.4L8 5.6h8l1.6 2.8H21v10.2H3z"/><circle cx="12" cy="13.2" r="3.6"/></svg>Take photo</button>
     <button class="ghost" id="pickEmpty">Choose from library</button>
+    <button class="ghost" id="torchEmpty">Torch pair (experiment)</button>
     <p class="build" id="buildTag"></p>
   </div>
   <div id="busy" hidden>Working…</div>
+
+  <div id="cam" hidden>
+    <video id="camView" playsinline muted autoplay></video>
+    <div class="camBar">
+      <button class="ghost" id="camCancel">Cancel</button>
+      <button id="camShoot" aria-label="Take the pair"></button>
+      <span class="camNote" id="camNote">Hold as still as you can</span>
+    </div>
+  </div>
 </div>
 
 <div id="tools" hidden>
-  <span class="lab">one part &asymp;&nbsp;<b id="pitchVal">—</b></span>
-  <button id="pHalf">&divide;2</button>
-  <button id="pDouble">&times;2</button>
-  <button id="pSet">set by tapping</button>
+  <span id="srcTog" hidden><button id="srcPhoto">Photo</button><button id="srcDiff">Torch</button></span>
+  <span class="lab">Not right?</span>
+  <button id="pDouble">Too many</button>
+  <button id="pHalf">Too few</button>
+  <button id="pSet">Show me one part</button>
 </div>
 
 <div class="hint" id="hint">Take a photo of the stack edge to begin</div>
@@ -158,6 +187,7 @@
 <footer>
   <button class="iconbtn" id="shoot" aria-label="New photo"><svg viewBox="0 0 24 24"><path d="M3 8.4h3.4L8 5.6h8l1.6 2.8H21v10.2H3z"/><circle cx="12" cy="13.2" r="3.6"/></svg></button>
   <button class="iconbtn" id="pick" aria-label="Library"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.2"/><circle cx="8.4" cy="10" r="1.6"/><path d="M4 16.6l4.6-4.2 3.4 3 3-2.4L20 17"/></svg></button>
+  <button class="iconbtn" id="torchBtn" aria-label="Torch pair"><svg viewBox="0 0 24 24"><path d="M13 2.6L5.4 13.4h5.2l-.6 8 7.6-10.8h-5.2z"/></svg></button>
   <button class="primary grow" id="addSection" disabled>Save section</button>
   <button class="iconbtn" id="clearAll" aria-label="Clear all"><svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg></button>
   <button class="iconbtn" id="saveBtn" aria-label="Save image"><svg viewBox="0 0 24 24"><path d="M12 4v11M7.6 10.8L12 15.2l4.4-4.4M4.4 19.4h15.2"/></svg></button>
@@ -485,6 +515,143 @@ function countAlongLine(gray, W, H, p0, p1, opts = {}) {
   };
 }
 
+/**
+ * Do parallel scans either side of the swipe agree?
+ *
+ * A repeating stack gives the same count wherever you cut across it. Four
+ * fingers, or any small set of irregular objects, does not. Measured spread
+ * (std/mean of the counts): steel stacks 0.03-0.13, a hand of fingers
+ * 0.24-0.30. This does NOT produce a better number — taking the median made
+ * the steel counts worse — it only flags that the answer is unstable.
+ */
+function scansAgree(gray, W, H, p0, p1, opts = {}, nLines = 5, spread = 0.18) {
+  const vx = p1.x - p0.x, vy = p1.y - p0.y;
+  const L = Math.hypot(vx, vy);
+  if (!L) return null;
+  const ux = vx / L, uy = vy / L, px = -uy, py = ux;
+  const step = L * spread / (nLines - 1);
+  const counts = [];
+  for (let i = 0; i < nLines; i++) {
+    const o = (i - (nLines - 1) / 2) * step;
+    const a = { x: p0.x + px * o, y: p0.y + py * o };
+    const b = { x: p1.x + px * o, y: p1.y + py * o };
+    if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
+    if (b.x < 0 || b.y < 0 || b.x >= W || b.y >= H) continue;
+    try {
+      counts.push(countAlongLine(gray, W, H, a, b, { ...opts, band: 15 }).count);
+    } catch (e) { /* a scan that falls off the image just doesn't vote */ }
+  }
+  if (counts.length < 3) return null;
+  const m = counts.reduce((s, c) => s + c, 0) / counts.length;
+  if (m <= 0) return null;
+  const sd = Math.sqrt(counts.reduce((s, c) => s + (c - m) * (c - m), 0) / counts.length);
+  return (sd / m) < 0.18;
+}
+
+/* ------------------------------------------------- two-shot torch pairing */
+
+/**
+ * Find the (dx,dy) that best aligns image B onto image A.
+ *
+ * The two torch frames are taken a few hundred milliseconds apart, handheld,
+ * so they are offset by a few pixels to a few tens of pixels. The photometric
+ * difference below assumes pixel-for-pixel correspondence, so this is not
+ * optional — an unaligned subtraction produces edge artefacts that look
+ * exactly like parts.
+ *
+ * Coarse-to-fine: search a wide range on a heavily downsampled pair, then
+ * refine at full resolution. Pure translation only; rotation over 300ms of
+ * hand shake is small enough to ignore, and estimating it would cost far more
+ * than it returns.
+ */
+function alignTranslation(a, b, W, H, maxShift = 48) {
+  const shrink = (src, w, h, k) => {
+    const nw = Math.max(8, Math.floor(w / k)), nh = Math.max(8, Math.floor(h / k));
+    const out = new Float64Array(nw * nh);
+    for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
+      let s = 0, n = 0;
+      for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) {
+        const sy = y * k + j, sx = x * k + i;
+        if (sy < h && sx < w) { s += src[sy * w + sx]; n++; }
+      }
+      out[y * nw + x] = s / Math.max(1, n);
+    }
+    return { d: out, w: nw, h: nh };
+  };
+
+  // Match on the GRADIENT, not the brightness. The whole point of the pair is
+  // that brightness changes between the two frames; edges stay put.
+  const grad = (src, w, h) => {
+    const g = new Float64Array(w * h);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const gx = src[y * w + x + 1] - src[y * w + x - 1];
+      const gy = src[(y + 1) * w + x] - src[(y - 1) * w + x];
+      g[y * w + x] = Math.sqrt(gx * gx + gy * gy);
+    }
+    return g;
+  };
+
+  function bestShift(ga, gb, w, h, range, step, cx, cy) {
+    let best = { x: cx, y: cy, score: -Infinity };
+    const m = Math.floor(Math.min(w, h) * 0.15);            // ignore the border
+    for (let dy = cy - range; dy <= cy + range; dy += step) {
+      for (let dx = cx - range; dx <= cx + range; dx += step) {
+        let num = 0, na = 0, nb = 0;
+        for (let y = m; y < h - m; y += 2) {
+          const sy = y + dy; if (sy < 0 || sy >= h) continue;
+          for (let x = m; x < w - m; x += 2) {
+            const sx = x + dx; if (sx < 0 || sx >= w) continue;
+            const va = ga[y * w + x], vb = gb[sy * w + sx];
+            num += va * vb; na += va * va; nb += vb * vb;
+          }
+        }
+        const s = num / (Math.sqrt(na * nb) + 1e-9);         // normalised correlation
+        if (s > best.score) best = { x: dx, y: dy, score: s };
+      }
+    }
+    return best;
+  }
+
+  // The coarse stage must not be able to reach further than maxShift once the
+  // fine stage widens around it, or the search escapes the range the caller
+  // asked for — and on a repeating pattern, escaping by one period gives a
+  // confident, completely wrong answer.
+  const k = Math.max(1, Math.min(4, Math.floor(maxShift / 3)));
+  const A8 = shrink(a, W, H, k), B8 = shrink(b, W, H, k);
+  const gA8 = grad(A8.d, A8.w, A8.h), gB8 = grad(B8.d, B8.w, B8.h);
+  const coarse = bestShift(gA8, gB8, A8.w, A8.h,
+                           Math.max(1, Math.floor(maxShift / k) - 1), 1, 0, 0);
+
+  const gA = grad(a, W, H), gB = grad(b, W, H);
+  const clamp = v => Math.max(-maxShift, Math.min(maxShift, v));
+  const fine = bestShift(gA, gB, W, H, k, 1,
+                         clamp(coarse.x * k), clamp(coarse.y * k));
+  return { dx: clamp(fine.x), dy: clamp(fine.y), score: fine.score };
+}
+
+/**
+ * Normalised difference of a lit / unlit pair: (lit - unlit) / (lit + unlit).
+ *
+ * Dividing by the sum cancels surface colour, so a painted mark or a saw
+ * striation — which reflects both frames identically — drops out, while
+ * anything whose response to the torch differs survives. With the torch beside
+ * the lens that difference is mostly 1/r-squared falloff and the cosine of the
+ * surface angle: near, square-on surfaces brighten most.
+ */
+function photometricPair(lit, unlit, W, H, dx, dy) {
+  const out = new Float64Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const sy = Math.min(H - 1, Math.max(0, y + dy));
+    for (let x = 0; x < W; x++) {
+      const sx = Math.min(W - 1, Math.max(0, x + dx));
+      const L = lit[y * W + x], U = unlit[sy * W + sx];
+      const s = L + U;
+      out[y * W + x] = s > 1 ? ((L - U) / s) * 220 + 30 : 0;
+    }
+  }
+  return out;
+}
+
 /* --------------------------------------------------------- image loading */
 
 /** Draw an image into a canvas at the working width and return luminance. */
@@ -509,7 +676,8 @@ function toWorkingGrey(img, workW = WORK_W) {
 
 if (typeof window !== 'undefined') {
   window.StackEngine = {
-    SS, WORK_W, countAlongLine, toWorkingGrey, sampleProfile, detrend,
+    SS, WORK_W, countAlongLine, scansAgree, alignTranslation, photometricPair,
+    toWorkingGrey, sampleProfile, detrend,
     fundamentalPitch, findPeaks, gaussian1d, std, percentile
   };
 }
@@ -534,7 +702,7 @@ const el = {
 // Bump this on every release. It is the only reliable way to tell, from the
 // phone, whether the published site is the version you think it is — caches and
 // home-screen shortcuts both hold onto old copies quietly.
-const BUILD = 'build 4 \u00b7 13 Sep 2026';
+const BUILD = 'build 6 \u00b7 13 Sep 2026';
 
 const LS = { sens: 'swipe.sens', work: 'swipe.work' };
 const get = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
@@ -552,7 +720,10 @@ const S = {
   drag: null,
   busy: false,
   setSize: false,      // waiting for two taps that define one part
-  sizeFirst: null      // position along the line of the first of those taps
+  sizeFirst: null,     // position along the line of the first of those taps
+  agree: null,         // did parallel scans agree? null until a count is run
+  pairLit: null, pairDiff: null, pairLitCanvas: null, pairDiffCanvas: null,
+  source: 'photo', torched: false
 };
 
 /* ---------------------------------------------------------- photo loading */
@@ -580,6 +751,8 @@ async function loadFile(file) {
     if (src.close) src.close();
 
     S.img = c; S.grey = grey; S.W = W; S.H = H;
+    S.pairLit = S.pairDiff = null; S.source = 'photo';
+    const tog = document.getElementById('srcTog'); if (tog) tog.hidden = true;
     S.line = null; S.marks = [];
     el.view.width = W; el.view.height = H;
     el.empty.style.display = 'none';
@@ -613,6 +786,12 @@ const P = new Map();
 let pinch = null, tapC = null;
 
 el.stage.addEventListener('pointerdown', e => {
+  // The camera overlay lives inside #stage, so without this the swipe handler
+  // calls setPointerCapture and steals the pointer from the shutter button —
+  // which then never receives its click. Only bites once a photo is loaded,
+  // because otherwise this handler returns early anyway.
+  const cam = document.getElementById('cam');
+  if (cam && !cam.hidden) return;
   if (!S.img || S.busy) return;
   el.stage.setPointerCapture(e.pointerId);
   P.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -737,6 +916,14 @@ async function runCount() {
   try {
     const r = StackEngine.countAlongLine(S.grey, S.W, S.H, S.line.p0, S.line.p1,
       { sens: S.sens, pitchPx: (S.lockPitch && S.pitchPx) ? S.pitchPx : null });
+
+    // Re-run the count on a few scans either side of the swipe. A genuinely
+    // repeating stack gives the same answer wherever you cut it. Measured:
+    // steel photos varied by 3-13%, a hand of fingers by 24-30%. Wide
+    // disagreement does not tell us the right number, only that this number
+    // deserves checking.
+    S.agree = StackEngine.scansAgree(S.grey, S.W, S.H, S.line.p0, S.line.p1,
+      { sens: S.sens, pitchPx: (S.lockPitch && S.pitchPx) ? S.pitchPx : null });
     if (!S.pitchPx || !S.lockPitch) S.pitchPx = r.pitchPx;
     S.marks = r.positions.map(t => ({ t, src: 'ai' }));
     updateTotal(); draw();
@@ -750,6 +937,10 @@ async function runCount() {
       warn(`This swipe reads ${r.measuredPx.toFixed(0)}px between parts, but the ` +
            `spacing is locked at ${S.pitchPx.toFixed(0)}px. Different part? ` +
            `Tap here to re-measure.`);
+    } else if (S.agree === false) {
+      S.pitchMismatch = null;
+      warn('Scans either side of your swipe disagree — this may not be a regular ' +
+           'stack. Check the ticks before trusting the number.');
     } else { S.pitchMismatch = null; setHint(); }
   } catch (e) {
     openError(e.message || String(e));
@@ -770,13 +961,16 @@ function scalePitch(k) {
   S.pitchPx = S.pitchPx * k; S.lockPitch = true;
   runCount();
 }
-$('#pHalf').onclick = () => scalePitch(0.5);
+// Named for what the person sees, not for what the arithmetic does. "Too many"
+// means each part is bigger than the app assumed, so the spacing doubles and the
+// count roughly halves.
 $('#pDouble').onclick = () => scalePitch(2);
+$('#pHalf').onclick = () => scalePitch(0.5);
 $('#pSet').onclick = () => {
   if (!S.line) return;
   S.setSize = !S.setSize; S.sizeFirst = null;
   $('#pSet').classList.toggle('on', S.setSize);
-  if (S.setSize) toast('Tap the middle of one part, then the one next to it');
+  if (S.setSize) toast('Tap the middle of one part, then the middle of the one next to it');
   else setHint();
   draw();
 };
@@ -803,8 +997,20 @@ function updateTotal() {
   if (S.sections.length) bits.push(`${S.sections.length} saved + ${here} here`);
   if (manual) bits.push(`${manual} by hand`);
   el.totalLab.textContent = bits.length ? bits.join(' · ') : 'count';
-  el.tools.hidden = !S.line;
-  el.pitchVal.textContent = S.pitchPx ? Math.round(S.pitchPx) + ' px' : '—';
+  // The bar carries two different things: the Photo/Torch source toggle, which
+  // is useful the moment a pair exists, and the spacing corrections, which only
+  // mean anything once there is a count. Show the bar for either, hide the half
+  // that doesn't apply.
+  el.tools.hidden = !(S.line || S.pairDiff);
+  // looked up rather than cached: updateTotal() runs once at start-up, before
+  // the torch section further down has assigned its element references
+  const tog = document.getElementById('srcTog');
+  if (tog) tog.hidden = !S.pairDiff;
+  ['#pDouble', '#pHalf', '#pSet'].forEach(sel => {
+    const b = document.querySelector(sel); if (b) b.hidden = !S.line;
+  });
+  const lab = document.querySelector('#tools .lab');
+  if (lab) lab.hidden = !S.line;
   el.secBar.hidden = !S.sections.length;
   el.secBar.textContent = S.sections.length
     ? 'sections: ' + S.sections.map(s => s.count).join(' + ') + (here ? ` + ${here}` : '')
@@ -927,6 +1133,7 @@ function openSettings() {
 
     <label>Part spacing</label>
     <div class="kv"><span>Measured</span><b>${S.pitchPx ? S.pitchPx.toFixed(1) + ' px' : '—'}</b></div>
+    <div class="kv"><span>Scans agreed</span><b>${S.agree === null ? '—' : (S.agree ? 'yes' : 'no')}</b></div>
     <div class="row2" style="margin-top:10px">
       <button class="ghost ${S.lockPitch ? 'on' : ''}" id="lockOn">Lock after first swipe</button>
       <button class="ghost ${S.lockPitch ? '' : 'on'}" id="lockOff">Re-measure each time</button>
@@ -981,6 +1188,195 @@ el.sens.textContent = S.sens.toFixed(2).replace(/0$/, '');
 const bt = document.getElementById('buildTag');
 if (bt) bt.textContent = BUILD;
 updateTotal();
+
+/* ===========================================================================
+   Torch pair — two frames a few hundred milliseconds apart, one lit by the
+   phone's torch and one not, differenced to suppress surface marking.
+
+   This is an experiment, not a proven feature. What it can and cannot do:
+
+   CAN    remove whatever the ambient light was doing, and keep only the part
+          of the image that responds to a known light in a known place.
+          Measured on synthetic data, a painted mark's importance relative to
+          the parts fell 5.4x (0.92 -> 0.17).
+   CANNOT cast the raking shadows that made the two-lamp simulation work. The
+          torch sits ~1cm from the lens, which is the flattest possible
+          lighting. What survives is 1/r-squared falloff and the cosine of the
+          surface angle: near, square-on surfaces brighten most.
+   =========================================================================== */
+
+const TORCH_SETTLE_MS = 350;   // torch ramp + auto-exposure settling
+
+el.cam = $('#cam'); el.camView = $('#camView'); el.camNote = $('#camNote');
+el.srcTog = $('#srcTog');
+
+let camStream = null, camTrack = null;
+
+function frameToGrey(video, workW) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const k = vw > workW ? workW / vw : 1;
+  const W = Math.max(1, Math.round(vw * k)), H = Math.max(1, Math.round(vh * k));
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(video, 0, 0, W, H);
+  const px = g.getImageData(0, 0, W, H).data;
+  const grey = new Float64Array(W * H);
+  for (let i = 0, j = 0; i < px.length; i += 4, j++)
+    grey[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+  return { grey, W, H, canvas: c };
+}
+
+async function openTorchCam() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    openError('This browser will not give a web page camera access.'); return;
+  }
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' },
+               width: { ideal: 3840 }, height: { ideal: 2160 } },
+      audio: false
+    });
+  } catch (e) {
+    openError('Camera access was refused.\n\n' + (e.message || e.name || ''));
+    return;
+  }
+  camTrack = camStream.getVideoTracks()[0];
+  el.camView.srcObject = camStream;
+  el.cam.hidden = false;
+  try { await el.camView.play(); } catch (e) { }
+
+  const caps = camTrack.getCapabilities ? camTrack.getCapabilities() : {};
+  const s = camTrack.getSettings ? camTrack.getSettings() : {};
+  if (!('torch' in caps)) {
+    el.camNote.textContent = `No torch control on this device — it will take two ` +
+      `identical frames, which tells you nothing. ${s.width || '?'}x${s.height || '?'}`;
+    el.camNote.style.color = '#ffb454';
+  } else {
+    el.camNote.textContent = `Hold as still as you can · ${s.width || '?'}x${s.height || '?'}`;
+  }
+}
+
+function closeTorchCam() {
+  if (camTrack) {
+    // fire and forget — never await on the way out
+    try { camTrack.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {}); } catch (e) { }
+  }
+  if (camStream) camStream.getTracks().forEach(t => t.stop());
+  camStream = null; camTrack = null;
+  el.camView.srcObject = null;
+  el.cam.hidden = true;
+}
+
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+/** Never let a camera call hang the capture. applyConstraints is supposed to
+    settle promptly, but an implementation that simply never resolves would
+    freeze the app with the torch on and no way back. */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, rej) => setTimeout(() => rej(new Error(label + ' timed out')), ms))
+  ]);
+}
+
+async function shootPair() {
+  if (!camTrack) return;
+  $('#camShoot').disabled = true;
+  const workW = parseInt(get(LS.work, String(StackEngine.WORK_W)), 10) || StackEngine.WORK_W;
+  try {
+    el.camNote.textContent = 'unlit…';
+    const unlit = frameToGrey(el.camView, workW);
+
+    let torched = false;
+    try {
+      await withTimeout(camTrack.applyConstraints({ advanced: [{ torch: true }] }),
+                        1200, 'torch on');
+      torched = !!(camTrack.getSettings && camTrack.getSettings().torch);
+    } catch (e) { torched = false; }
+    // Settling matters more than speed here: the torch ramps up and the camera
+    // re-exposes. Shooting immediately catches the transition, which aligns
+    // badly and differences worse.
+    await wait(TORCH_SETTLE_MS);
+
+    el.camNote.textContent = 'lit…';
+    const lit = frameToGrey(el.camView, workW);
+    try { await withTimeout(camTrack.applyConstraints({ advanced: [{ torch: false }] }),
+                            1200, 'torch off'); } catch (e) { }
+
+    if (unlit.W !== lit.W || unlit.H !== lit.H) throw new Error('The two frames came back different sizes.');
+    closeTorchCam();
+    showBusy('Aligning the pair…');
+    await wait(16);
+
+    // Count on the lit frame first, purely to learn the part spacing, so the
+    // alignment search can be bounded below half of it. An unbounded search on
+    // a repeating pattern locks onto the wrong repeat with high confidence.
+    let maxShift = 12;
+    try {
+      const probe = StackEngine.countAlongLine(lit.grey, lit.W, lit.H,
+        { x: lit.W * 0.5, y: lit.H * 0.08 }, { x: lit.W * 0.5, y: lit.H * 0.92 }, {});
+      if (probe.pitchPx > 6) maxShift = Math.max(4, Math.min(24, Math.round(probe.pitchPx * 0.4)));
+    } catch (e) { }
+
+    const al = StackEngine.alignTranslation(unlit.grey, lit.grey, lit.W, lit.H, maxShift);
+    const diff = StackEngine.photometricPair(lit.grey, unlit.grey, lit.W, lit.H, al.dx, al.dy);
+
+    S.pairLit = lit.grey; S.pairDiff = diff;
+    S.pairLitCanvas = lit.canvas;
+    S.pairDiffCanvas = greyToCanvas(diff, lit.W, lit.H);
+    S.torched = torched;
+    S.W = lit.W; S.H = lit.H;
+    S.line = null; S.marks = []; S.pitchPx = null;
+    setSource('diff');
+    el.empty.style.display = 'none';
+    el.view.width = S.W; el.view.height = S.H;
+    fitToStage(); draw(); updateTotal();
+    if (!torched) warn('The torch would not turn on, so both frames are the same. ' +
+                       'The difference image is meaningless.');
+    else toast(`Pair taken, shifted by ${al.dx}, ${al.dy} px. Swipe across the parts.`);
+  } catch (e) {
+    closeTorchCam();
+    openError(e.message || String(e));
+  } finally {
+    $('#camShoot').disabled = false;
+    hideBusy();
+  }
+}
+
+function greyToCanvas(grey, W, H) {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const im = g.createImageData(W, H);
+  for (let i = 0, j = 0; i < grey.length; i++, j += 4) {
+    const v = Math.max(0, Math.min(255, grey[i] | 0));
+    im.data[j] = im.data[j + 1] = im.data[j + 2] = v; im.data[j + 3] = 255;
+  }
+  g.putImageData(im, 0, 0);
+  return c;
+}
+
+function setSource(which) {
+  if (!S.pairDiff) return;
+  S.source = which;
+  S.grey = which === 'diff' ? S.pairDiff : S.pairLit;
+  S.img = which === 'diff' ? S.pairDiffCanvas : S.pairLitCanvas;
+  $('#srcDiff').classList.toggle('on', which === 'diff');
+  $('#srcPhoto').classList.toggle('on', which !== 'diff');
+  draw();
+  if (S.line) runCount();
+}
+
+// belt and braces: nothing inside the camera overlay should reach the stage
+['pointerdown', 'pointermove', 'pointerup'].forEach(ev =>
+  el.cam.addEventListener(ev, e => e.stopPropagation()));
+
+$('#torchBtn').onclick = $('#torchEmpty').onclick = openTorchCam;
+$('#camCancel').onclick = closeTorchCam;
+$('#camShoot').onclick = shootPair;
+$('#srcPhoto').onclick = () => setSource('lit');
+$('#srcDiff').onclick = () => setSource('diff');
 </script>
 </body>
 </html>
