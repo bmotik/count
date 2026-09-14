@@ -31,6 +31,18 @@ its own icon.
 
 ---
 
+## Keeping it up to date
+
+GitHub Pages serves with a ten-minute cache and an iOS home-screen shortcut can
+hold its copy much longer, so a freshly pushed build can sit unseen for hours.
+
+The page handles this itself. At start-up it fetches its own URL with the cache
+bypassed, reads the build stamp out of the text, and if the server has a newer
+one it loads that instead. Only at start-up, before any counting has happened,
+so there is never a count to lose — and only once per launch, so it cannot loop.
+
+If you ever want to check by hand, the stamp is at the top of **Settings**.
+
 ## Using it
 
 1. Photograph the stack edge.

@@ -1130,7 +1130,7 @@ const el = {
 // Bump this on every release. It is the only reliable way to tell, from the
 // phone, whether the published site is the version you think it is — caches and
 // home-screen shortcuts both hold onto old copies quietly.
-const BUILD = 'build 8 \u00b7 13 Sep 2026';
+const BUILD = 'build 8 - 14 Sep 2026';
 
 const LS = { sens: 'swipe.sens', work: 'swipe.work' };
 const get = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
@@ -1790,6 +1790,33 @@ $('#camCancel').onclick = closeTorchCam;
 $('#camShoot').onclick = shootPair;
 $('#srcPhoto').onclick = () => setSource('lit');
 $('#srcDiff').onclick = () => setSource('diff');
+
+/* ---------------------------------------------------------- self-update */
+/**
+ * Check whether the copy on the server is newer than the copy running.
+ *
+ * GitHub Pages serves with a ten-minute cache and an iOS home-screen shortcut
+ * can hold its copy far longer, so a new build can sit there unseen. The page
+ * therefore checks itself: fetch its own URL with the cache bypassed, read the
+ * build stamp out of the text, and if it differs from the one running, load the
+ * fresh one. Only at start-up, before any counting has happened, so there is
+ * never work to lose — and only once per launch, so a server that somehow keeps
+ * answering with the old copy cannot put it in a loop.
+ */
+(async function checkForUpdate() {
+  try {
+    if (location.protocol === 'file:') return;
+    if (sessionStorage.getItem('swipe.updated')) return;
+    const r = await fetch(location.pathname + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const m = (await r.text()).match(/const BUILD = '([^']+)'/);
+    if (!m || m[1] === BUILD) return;
+    sessionStorage.setItem('swipe.updated', '1');
+    const bt = document.getElementById('buildTag');
+    if (bt) bt.textContent = 'updating\u2026';
+    location.replace(location.pathname + '?v=' + Date.now());
+  } catch (e) { /* offline, or a host that won't say. Carry on with what we have. */ }
+})();
 </script>
 </body>
 </html>
