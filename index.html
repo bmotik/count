@@ -103,6 +103,8 @@
   #tools .lab{font:600 12.5px/1 system-ui;color:var(--dim);white-space:nowrap;
     margin-right:4px}
   #tools .lab b{color:var(--ink);font-weight:600}
+  #tools .lab.good{color:#4ce39a}
+  #tools .lab.bad{color:#ffb454}
   #tools button{flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);
     color:var(--ink);border-radius:9px;font:600 12.5px/1 system-ui;padding:9px 11px}
   #tools button:active{background:#2f3846}
@@ -176,10 +178,7 @@
 
 <div id="tools" hidden>
   <span id="srcTog" hidden><button id="srcPhoto">Photo</button><button id="srcDiff">Torch</button></span>
-  <span class="lab">Not right?</span>
-  <button id="pDouble">Too many</button>
-  <button id="pHalf">Too few</button>
-  <button id="pSet">Show me one part</button>
+  <span class="lab" id="cliffLab"></span>
 </div>
 
 <div class="hint" id="hint">Take a photo of the stack edge to begin</div>
@@ -444,8 +443,28 @@ function sampleProfile(gray, W, H, p0, p1, band = 25) {
   return { prof: out, L, n };
 }
 
-/** Flatten the lighting gradient, then normalise by LOCAL contrast so one
-    threshold means the same thing at both ends of the line. */
+/** Subtract the slow lighting gradient. That is the whole preprocessing step.
+ *
+ *  Build 6 also divided by the local contrast, so that one threshold would
+ *  mean the same thing at the bright and the dark end of a stack. That step
+ *  is gone, and its removal is the point of build 7. Dividing by local
+ *  contrast amplifies a flat stretch of surface up to the same height as a
+ *  real gap: measured on a photo of four fingers, the three gaps had depths
+ *  142, 124 and 106 while the deepest thing that was not a gap was 8 — a 13x
+ *  cliff. After the division those same six numbers read 3.79, 3.78, 3.64,
+ *  3.62, 3.48, 3.39. A wrinkle weighed exactly as much as a gap, and the one
+ *  unambiguous signal in the picture had been erased before anything looked
+ *  at it.
+ */
+function flatten(raw) {
+  const s = gaussian1d(raw, 1.4);
+  const bg = gaussian1d(s, Math.max(12, raw.length / 8));
+  const d = new Float64Array(s.length);
+  for (let i = 0; i < s.length; i++) d[i] = s[i] - bg[i];
+  return d;
+}
+
+/** Kept so a saved section counted under build 6 still loads. Not used. */
 function detrend(raw) {
   const s = gaussian1d(raw, 1.4);
   const bg = gaussian1d(s, 45);
@@ -454,12 +473,52 @@ function detrend(raw) {
   const sq = new Float64Array(d.length);
   for (let i = 0; i < d.length; i++) sq[i] = d[i] * d[i];
   const env = gaussian1d(sq, 45);
+  const out = new Float64Array(d.length);
   const rough = new Float64Array(d.length);
   for (let i = 0; i < d.length; i++) rough[i] = Math.sqrt(env[i]);
   const floor = percentile(rough, 25) * 0.5 + 1e-6;
-  const out = new Float64Array(d.length);
   for (let i = 0; i < d.length; i++) out[i] = d[i] / Math.max(rough[i], floor);
   return out;
+}
+
+/** Every dip in the profile, with its depth, deepest first.
+ *
+ *  Depth here is topographic prominence: how far you must climb out of a dip
+ *  before you can reach anywhere lower. It is the right measure because it
+ *  ignores the absolute brightness either side — a shallow notch between two
+ *  tall parts scores low even if it is very dark, and a deep separation scores
+ *  high even in a dim corner of the photo. */
+function valleyDepths(d) {
+  const neg = new Float64Array(d.length);
+  for (let i = 0; i < d.length; i++) neg[i] = -d[i];
+  const idx = localMaxima(neg);
+  if (!idx.length) return { pos: [], depth: [] };
+  const pr = prominences(neg, idx);
+  const order = idx.map((_, i) => i).sort((a, b) => pr[b] - pr[a]);
+  return { pos: order.map(i => idx[i]), depth: order.map(i => pr[i]) };
+}
+
+/** Where do the depths stop being separations between parts?
+ *
+ *  Sorted deepest first, real separations sit together at the top and surface
+ *  detail sits together at the bottom, with a step between them. Take the
+ *  biggest proportional step. There is no tuned threshold here: on the finger
+ *  photo the cut can be placed anywhere from 10 to 100 and returns 4. */
+function cutAtCliff(depth, maxK = 200, floorFrac = 0.12) {
+  const k = Math.min(depth.length - 1, maxK);
+  if (k < 2) return { cut: depth.length, ratio: 1 };
+  // Stop looking once the dips are a small fraction of the deepest one. Without
+  // this the search runs down to the noise floor and finds an enormous step
+  // there: on one steel photo it returned 86 parts with a confident-looking
+  // 11x, because the step it found was between two pieces of surface texture.
+  const limit = floorFrac * depth[0];
+  let best = 1, bestR = -1;
+  for (let i = 1; i <= k; i++) {
+    if (depth[i - 1] < limit) break;
+    const r = depth[i - 1] / Math.max(depth[i], 1e-9);
+    if (r > bestR) { bestR = r; best = i; }
+  }
+  return { cut: best, ratio: bestR < 0 ? 1 : bestR };
 }
 
 /* ---------------------------------------------------------------- count */
@@ -469,6 +528,63 @@ function detrend(raw) {
  * `gray` is a Float32/Float64Array of luminance, W*H, already at working size.
  */
 function countAlongLine(gray, W, H, p0, p1, opts = {}) {
+  const band = opts.band ?? 25;
+  const sens = opts.sens ?? 1.0;
+  const { prof, L, n } = sampleProfile(gray, W, H, p0, p1, band);
+  const d = flatten(prof);
+
+  // ---- build 7: count the separations, not the parts ---------------------
+  //
+  // A part can show two or three bright features - its face, its bevel, a
+  // glint - and every one of them reads as a peak. What it cannot show is two
+  // separations from its neighbour. So count the gaps and add one. The swipe
+  // must start on the first part and end on the last: that is what makes the
+  // arithmetic work, and it is the one thing asked of the person holding the
+  // phone.
+  const { pos, depth } = valleyDepths(d);
+  if (pos.length < 2) {
+    return { count: 1, positions: [0.5], valleys: [], cliffRatio: 1,
+             pitchPx: L, measuredPx: L, lengthPx: L, samples: n };
+  }
+  const { cut, ratio } = cutAtCliff(depth);
+  // The cliff sets the threshold; the -/+ control slides it from there.
+  const hi = depth[cut - 1], lo = (cut < depth.length ? depth[cut] : 0);
+  const thresh = Math.sqrt(Math.max(hi, 1e-9) * Math.max(lo, hi * 0.02)) / sens;
+
+  const keep = [];
+  for (let i = 0; i < pos.length; i++) if (depth[i] >= thresh) keep.push(pos[i]);
+  keep.sort((a, b) => a - b);
+
+  // A tick goes in the middle of each part, i.e. between consecutive
+  // separations, with the two ends of the swipe closing off the outer parts.
+  const bounds = [0, ...keep, n - 1];
+  const centres = [];
+  for (let i = 0; i < bounds.length - 1; i++) centres.push((bounds[i] + bounds[i + 1]) / 2);
+  const pitchPx = L / Math.max(1, centres.length);
+
+  // Did the swipe run past the parts onto the bench? Then the edge of the whole
+  // pile is itself a dip, far deeper than any gap between two parts, and it
+  // sets the scale everything else is judged against. Detectable: the deepest
+  // dip sits in the outer tenth of the swipe AND dwarfs the next few.
+  let ranOff = false;
+  if (depth.length > 4) {
+    const nearEnd = pos[0] < n * 0.10 || pos[0] > n * 0.90;
+    const next = (depth[1] + depth[2] + depth[3]) / 3;
+    ranOff = nearEnd && depth[0] > next * 2.5;
+  }
+
+  return {
+    count: centres.length,
+    positions: centres.map(i => i / (n - 1)),
+    valleys: keep.map(i => i / (n - 1)),
+    cliffRatio: ratio,          // how clean the separation was; > 4 is confident
+    ranOff,
+    pitchPx, measuredPx: pitchPx, lengthPx: L, samples: n
+  };
+}
+
+/** Build 6's peak counter, kept only so the old behaviour can be compared. */
+function countPeaksLegacy(gray, W, H, p0, p1, opts = {}) {
   const band = opts.band ?? 25;
   const sens = opts.sens ?? 1.0;
   const { prof, L, n } = sampleProfile(gray, W, H, p0, p1, band);
@@ -675,9 +791,321 @@ function toWorkingGrey(img, workW = WORK_W) {
 }
 
 if (typeof window !== 'undefined') {
+
+/* ======================================================================
+   Build 8 — several swipes across one stack, voting.
+
+   One swipe cannot tell a boundary between two parts from a scratch on one
+   of them: both are a place where lightness changes fast. Several swipes
+   can. A boundary runs all the way across the stack, so it appears in every
+   swipe. A scratch, a burr, a blurred patch appears in one.
+
+   Measured on a stack of 14 plates with blurred edges: four hand-drawn lines
+   gave 4, 12, 11 and 6 on their own, and 14 together.
+
+   The extra lines have to be placed by the person. Generating them
+   automatically, parallel to the swipe, was tested and is worse than a single
+   line — on two of six photos the generated lines wandered off the parts and
+   the count collapsed. Where they fall is the information.
+   ====================================================================== */
+
+const M_COMMON = 1024;          // every swipe is stretched onto this ruler
+
+/** Rows of the band around a line, each one its own 1-D slice of the photo. */
+function bandRows(gray, W, H, p0, p1, band = 50, step = 2) {
+  const vx = p1.x - p0.x, vy = p1.y - p0.y;
+  const L = Math.hypot(vx, vy);
+  const n = Math.max(16, Math.floor(L * SS));
+  const ux = vx / L, uy = vy / L, px = -uy, py = ux;
+  const rows = [];
+  for (let o = -band; o <= band; o += step) {
+    const r = new Float64Array(n);
+    let ok = true;
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const x = p0.x + vx * t + px * o, y = p0.y + vy * t + py * o;
+      const xi = Math.min(W - 1, Math.max(0, Math.round(x)));
+      const yi = Math.min(H - 1, Math.max(0, Math.round(y)));
+      if (x < 0 || y < 0 || x > W - 1 || y > H - 1) ok = false;
+      r[i] = gray[yi * W + xi];
+    }
+    if (ok) rows.push(r);
+  }
+  return { rows, n, L };
+}
+
+/** How fast is lightness changing here, judged against this row's own scale?
+    Per row, so a dim row and a bright row get an equal vote. */
+function edgeResponse(y, sigma = 3) {
+  const s = gaussian1d(y, sigma);
+  const n = s.length, d = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = s[Math.max(0, i - 1)], b = s[Math.min(n - 1, i + 1)];
+    d[i] = Math.abs((b - a) / 2);
+  }
+  const sorted = Array.from(d).sort((a, b) => a - b);
+  const med = sorted[sorted.length >> 1] + 1e-6;
+  for (let i = 0; i < n; i++) d[i] /= med;
+  return d;
+}
+
+/** Keep what nearly every row agrees on: a low quantile down each column. */
+function quantileDown(R, n, q = 0.20) {
+  const m = R.length, out = new Float64Array(n), col = new Float64Array(m);
+  const idx = Math.min(m - 1, Math.max(0, Math.round(q * (m - 1))));
+  for (let i = 0; i < n; i++) {
+    for (let r = 0; r < m; r++) col[r] = R[r][i];
+    const s = Array.prototype.slice.call(col).sort((a, b) => a - b);
+    out[i] = s[idx];
+  }
+  return out;
+}
+
+function shiftRows(R, n, perRow) {
+  const m = R.length, mid = (m - 1) / 2, out = new Array(m);
+  for (let r = 0; r < m; r++) {
+    const s = Math.round(perRow * (r - mid));
+    const src = R[r], dst = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let j = i - s; if (j < 0) j += n; if (j >= n) j -= n;
+      dst[i] = src[j];
+    }
+    out[r] = dst;
+  }
+  return out;
+}
+
+/**
+ * Edge strength along one swipe.
+ *
+ * Two things beyond the obvious. The boundary need not be perpendicular to the
+ * swipe - a stack photographed from an angle has slanted edges - so the slant
+ * that makes the rows line up is searched for. And the result is divided by its
+ * own local average, so a faint boundary in a dim stretch of the photo competes
+ * with a strong one in a bright stretch. That second step is levelling, which
+ * build 6 applied to the brightness itself and thereby destroyed the signal.
+ * Applied to edge strength it does what levelling was always meant to do.
+ */
+function boundaryScore(gray, W, H, p0, p1, opts = {}) {
+  const { rows, n, L } = bandRows(gray, W, H, p0, p1, opts.band ?? 50, opts.step ?? 2);
+  if (rows.length < 5 || n < 32) return null;
+  const R = rows.map(y => edgeResponse(y, opts.sigma ?? 3));
+  const cap = (opts.slantFrac ?? 0.015) * n;
+  let best = { v: -Infinity, sc: null };
+  for (let s = -12; s <= 12; s++) {
+    const per = (cap * s / 12) / rows.length * 2;
+    const sc = quantileDown(shiftRows(R, n, per), n);
+    const sd = std(sc);
+    if (sd > best.v) best = { v: sd, sc };
+  }
+  let sc = best.sc;
+  const env = gaussian1d(sc, Math.max(4, n * (opts.levelWin ?? 0.07)));
+  const floor = percentile(env, 25) * 0.5 + 1e-6;
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) out[i] = sc[i] / Math.max(env[i], floor);
+  return { score: out, n, L };
+}
+
+function resampleZ(s, m = M_COMMON) {
+  const n = s.length, out = new Float64Array(m);
+  for (let i = 0; i < m; i++) {
+    const t = i / (m - 1) * (n - 1), j = Math.floor(t), f = t - j;
+    out[i] = j >= n - 1 ? s[n - 1] : s[j] * (1 - f) + s[j + 1] * f;
+  }
+  const mu = mean(out), sd = std(out) + 1e-9;
+  for (let i = 0; i < m; i++) out[i] = (out[i] - mu) / sd;
+  return out;
+}
+
+function warpCurve(s, a, b, m = M_COMMON) {
+  const out = new Float64Array(m);
+  for (let i = 0; i < m; i++) {
+    const u = a * (i / (m - 1)) + b;
+    const t = Math.min(1, Math.max(0, u)) * (m - 1);
+    const j = Math.floor(t), f = t - j;
+    out[i] = j >= m - 1 ? s[m - 1] : s[j] * (1 - f) + s[j + 1] * f;
+  }
+  return out;
+}
+
+/** Stretch and shift this curve until it agrees best with the first swipe.
+    The stack is the same stack; the swipes just sample it in different places. */
+function alignTo(ref, c) {
+  let best = { corr: -2, a: 1, b: 0, curve: c };
+  for (let ai = -15; ai <= 15; ai++) {
+    const a = 1 + ai * 0.01;
+    for (let bi = -14; bi <= 14; bi++) {
+      const b = bi * 0.01;
+      const w = warpCurve(c, a, b);
+      const mu = mean(w), sd = std(w) + 1e-9;
+      let s = 0;
+      for (let i = 0; i < ref.length; i++) s += ref[i] * (w[i] - mu) / sd;
+      s /= ref.length;
+      if (s > best.corr) best = { corr: s, a, b, curve: w };
+    }
+  }
+  const mu = mean(best.curve), sd = std(best.curve) + 1e-9;
+  const z = new Float64Array(best.curve.length);
+  for (let i = 0; i < z.length; i++) z[i] = (best.curve[i] - mu) / sd;
+  return { corr: best.corr, a: best.a, b: best.b, curve: z };
+}
+
+function medianAcross(curves) {
+  const m = curves[0].length, out = new Float64Array(m), col = new Array(curves.length);
+  for (let i = 0; i < m; i++) {
+    for (let k = 0; k < curves.length; k++) col[k] = curves[k][i];
+    col.sort((a, b) => a - b);
+    const h = col.length >> 1;
+    out[i] = col.length % 2 ? col[h] : (col[h - 1] + col[h]) / 2;
+  }
+  return out;
+}
+
+/** Spacing of the repeat, as a fraction of the run. Harmonic product spectrum,
+    so a boundary that shows as a bright line beside a dark one is not counted
+    twice over. */
+function pitchFraction(x, lo = 0.02, hi = 0.25, nHarm = 5) {
+  const n = x.length;
+  const m = mean(x);
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const han = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
+    w[i] = (x[i] - m) * han;
+  }
+  const { P, N } = realPower(w, n * 4);
+  const prod = Float64Array.from(P);
+  for (let h = 2; h <= nHarm; h++) {
+    for (let i = 0; i < P.length; i++) {
+      const j = i * h;
+      prod[i] *= Math.pow((j < P.length ? P[j] : 0) + 1e-12, 1 / h);
+    }
+  }
+  let bestK = 0, bestV = -1;
+  for (let k = 1; k < P.length; k++) {
+    const cycles = k * n / N;                  // repeats across the whole run
+    if (cycles < 1 / hi || cycles > 1 / lo) continue;
+    if (prod[k] > bestV) { bestV = prod[k]; bestK = k; }
+  }
+  if (!bestK) return 0.05;
+  return 1 / (bestK * n / N);
+}
+
+function rankBoundaries(sc, pitchFrac) {
+  const n = sc.length;
+  const s = gaussian1d(sc, Math.max(1, n * pitchFrac * 0.10));
+  const dist = Math.max(2, Math.round(n * pitchFrac * 0.55));
+  let peaks = localMaxima(s);
+  if (!peaks.length) return { pos: [], dep: [], smooth: s };
+  const pr = prominences(s, peaks);
+  peaks = selectByDistance(peaks, peaks.map(i => s[i]), dist);
+  const prSel = prominences(s, peaks);
+  const order = peaks.map((_, i) => i).sort((a, b) => prSel[b] - prSel[a]);
+  return { pos: order.map(i => peaks[i]), dep: order.map(i => prSel[i]), smooth: s };
+}
+
+/**
+ * How many of the ranked boundaries are real?
+ *
+ * Two rules, and which one fires is itself informative. If the depths fall off
+ * a cliff, take everything above it - that needs no assumption at all, and on a
+ * hand of fingers the cliff is 80x. If they do not, fall back to whichever
+ * number of boundaries is most evenly spaced. That IS the spacing assumption,
+ * and it is wrong for irregular objects - but it is only choosing where to stop
+ * in a list the boundaries are already at the top of, not finding them.
+ */
+function chooseCut(pos, dep, expected, lambda = 0.25) {
+  if (dep.length < 3) return { k: dep.length, how: 'too few', cliff: 1, cv: NaN };
+  const lim = 0.12 * dep[0];
+  let k1 = 1, r1 = -1;
+  for (let i = 1; i <= Math.min(dep.length - 1, 200); i++) {
+    if (dep[i - 1] < lim) break;
+    const r = dep[i - 1] / Math.max(dep[i], 1e-9);
+    if (r > r1) { r1 = r; k1 = i; }
+  }
+  if (r1 >= 4.0) return { k: k1, how: 'cliff', cliff: r1, cv: NaN };
+  // The measured pitch says roughly how many boundaries there should be. Let
+  // the regularity rule choose only near that. Without this bound it is free to
+  // pick three boundaries that happen to be evenly spaced and call a stack of
+  // 26 plates four parts, which is exactly what it did.
+  let kLo = 3, kHi = Math.min(pos.length, 200);
+  if (expected && isFinite(expected) && expected >= 2) {
+    kLo = Math.max(2, Math.floor(expected * 0.65));
+    kHi = Math.min(pos.length, Math.ceil(expected * 1.5));
+    if (kHi < kLo) kHi = Math.min(pos.length, kLo);
+  }
+  let bestCv = Infinity, k2 = Math.min(Math.max(k1, kLo), kHi);
+  for (let k = kLo; k <= kHi; k++) {
+    const t = pos.slice(0, k).slice().sort((a, b) => a - b);
+    const g = []; for (let i = 1; i < t.length; i++) g.push(t[i] - t[i - 1]);
+    const m = mean(g); if (!m) continue;
+    // Regularity alone quietly prefers the smallest k: two boundaries are
+    // always perfectly evenly spaced. Penalise drifting away from the pitch the
+    // spectrum measured.
+    const pen = expected ? lambda * Math.abs(k - expected) / expected : 0;
+    const cv = std(g) / m + pen;
+    if (cv < bestCv) { bestCv = cv; k2 = k; }
+  }
+  return { k: k2, how: 'spacing', cliff: r1, cv: bestCv };
+}
+
+/**
+ * The whole thing. `lines` is one or more swipes across the same stack.
+ * Returns the count and, for each swipe, where the boundaries fall along it.
+ */
+function countAcrossLines(gray, W, H, lines, opts = {}) {
+  const scored = [];
+  for (const ln of lines) {
+    const r = boundaryScore(gray, W, H, ln.p0, ln.p1, opts);
+    if (r) scored.push({ ...r, z: resampleZ(r.score) });
+  }
+  if (!scored.length) throw new Error('Swipe across the parts, not along them.');
+
+  const ref = scored[0].z;
+  const maps = [{ a: 1, b: 0, corr: 1 }];
+  const curves = [ref];
+  for (let i = 1; i < scored.length; i++) {
+    const al = alignTo(ref, scored[i].z);
+    maps.push({ a: al.a, b: al.b, corr: al.corr });
+    curves.push(al.curve);
+  }
+  const cons = curves.length > 1 ? medianAcross(curves) : ref;
+
+  const pf = pitchFraction(cons);
+  const { pos, dep, smooth } = rankBoundaries(cons, pf);
+  const cut = chooseCut(pos, dep, Math.max(1, 1 / pf - 1), opts.regPenalty ?? 0.10);
+  const kept = pos.slice(0, cut.k).slice().sort((a, b) => a - b);
+  const m = cons.length;
+
+  // Back onto each swipe: consensus position t maps to a*t + b on swipe i.
+  const perLine = maps.map(mp => kept.map(p => {
+    const t = p / (m - 1);
+    return Math.min(1, Math.max(0, mp.a * t + mp.b));
+  }));
+
+  const centres = [];
+  const edges = [0, ...kept.map(p => p / (m - 1)), 1];
+  for (let i = 0; i < edges.length - 1; i++) centres.push((edges[i] + edges[i + 1]) / 2);
+
+  const agree = maps.length > 1
+    ? maps.slice(1).reduce((s, x) => s + x.corr, 0) / (maps.length - 1) : null;
+
+  return {
+    count: centres.length,
+    positions: centres,            // along the FIRST swipe, for the ticks
+    boundaries: perLine,           // per swipe, 0..1 along that swipe
+    nLines: scored.length,
+    agree,                         // how well the swipes corroborate each other
+    cliff: cut.cliff, how: cut.how, cv: cut.cv,
+    pitchFrac: pf,
+    pitchPx: scored[0].L / Math.max(1, centres.length),
+    lengthPx: scored[0].L, samples: scored[0].n
+  };
+}
+
   window.StackEngine = {
-    SS, WORK_W, countAlongLine, scansAgree, alignTranslation, photometricPair,
-    toWorkingGrey, sampleProfile, detrend,
+    SS, WORK_W, countAcrossLines, boundaryScore, countAlongLine, countPeaksLegacy, scansAgree,
+    alignTranslation, photometricPair,
+    toWorkingGrey, sampleProfile, detrend, flatten, valleyDepths, cutAtCliff,
     fundamentalPitch, findPeaks, gaussian1d, std, percentile
   };
 }
@@ -702,7 +1130,7 @@ const el = {
 // Bump this on every release. It is the only reliable way to tell, from the
 // phone, whether the published site is the version you think it is — caches and
 // home-screen shortcuts both hold onto old copies quietly.
-const BUILD = 'build 6 \u00b7 13 Sep 2026';
+const BUILD = 'build 8 \u00b7 13 Sep 2026';
 
 const LS = { sens: 'swipe.sens', work: 'swipe.work' };
 const get = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
@@ -714,13 +1142,14 @@ const S = {
   line: null,           // {p0:{x,y}, p1:{x,y}} in working pixels
   marks: [],            // [{t, src}] t = 0..1 along the line
   pitchPx: null,        // locked after the first section
-  lockPitch: true,
+  lockPitch: false,
+  lines: [],            // every swipe across this stack
+  cliff: null,
+  valleys: [],
   sections: [],         // [{count, manual}] committed sections
   sens: parseFloat(get(LS.sens, '1')) || 1,
   drag: null,
   busy: false,
-  setSize: false,      // waiting for two taps that define one part
-  sizeFirst: null,     // position along the line of the first of those taps
   agree: null,         // did parallel scans agree? null until a count is run
   pairLit: null, pairDiff: null, pairLitCanvas: null, pairDiffCanvas: null,
   source: 'photo', torched: false
@@ -753,7 +1182,7 @@ async function loadFile(file) {
     S.img = c; S.grey = grey; S.W = W; S.H = H;
     S.pairLit = S.pairDiff = null; S.source = 'photo';
     const tog = document.getElementById('srcTog'); if (tog) tog.hidden = true;
-    S.line = null; S.marks = [];
+    S.line = null; S.lines = []; S.marks = [];
     el.view.width = W; el.view.height = H;
     el.empty.style.display = 'none';
     fitToStage(); draw(); updateTotal(); setHint();
@@ -841,7 +1270,15 @@ function endPointer(e) {
   if (drag) {
     const len = Math.hypot(drag.p1.x - drag.p0.x, drag.p1.y - drag.p0.y);
     // A swipe shorter than this is a slip, not an instruction.
-    if (len > Math.min(S.W, S.H) * 0.08) { S.line = drag; runCount(); }
+    if (len > Math.min(S.W, S.H) * 0.08) {
+      // Every swipe is another look at the same stack, not a replacement for
+      // the last one. A boundary between two parts is crossed by all of them;
+      // a scratch on one part is crossed by one.
+      if (S.lines.length >= 6) S.lines.shift();
+      S.lines.push(drag);
+      S.line = S.lines[0];
+      runCount();
+    }
     else draw();
   }
 }
@@ -865,25 +1302,6 @@ function handleTap(cx, cy) {
   const p = toImage(cx, cy);
   const g = lineGeom();
 
-  // Setting the part size by example. No statistic can resolve this: a strip of
-  // keyboard genuinely supports "4 keys" and "7 edges" equally well, and the
-  // same is true of parts carrying stamped marks or weld beads. Only the person
-  // looking at it knows which repeat is one part, so they point at it.
-  if (S.setSize) {
-    const t = ((p.x - g.p0.x) * g.vx + (p.y - g.p0.y) * g.vy) / (g.L * g.L);
-    if (S.sizeFirst === null) {
-      S.sizeFirst = t; draw();
-      toast('Now tap the middle of the part next to it');
-      return;
-    }
-    const px = Math.abs(t - S.sizeFirst) * g.L;
-    S.setSize = false; S.sizeFirst = null;
-    $('#pSet').classList.remove('on');
-    if (px < 4) { toast('Those were too close together — try again'); return; }
-    S.pitchPx = px; S.lockPitch = true;
-    runCount();
-    return;
-  }
   // The hit radius must stay under half the part spacing. Any larger and a tap
   // meant to ADD a tick between two parts always lands on a neighbour instead,
   // so deleting one and tapping again just deletes another. Below a usable
@@ -914,34 +1332,22 @@ async function runCount() {
   S.busy = true; showBusy('Counting…');
   await new Promise(r => setTimeout(r, 16));          // let the spinner paint
   try {
-    const r = StackEngine.countAlongLine(S.grey, S.W, S.H, S.line.p0, S.line.p1,
-      { sens: S.sens, pitchPx: (S.lockPitch && S.pitchPx) ? S.pitchPx : null });
+    const r = StackEngine.countAcrossLines(S.grey, S.W, S.H, S.lines, { sens: S.sens });
 
-    // Re-run the count on a few scans either side of the swipe. A genuinely
-    // repeating stack gives the same answer wherever you cut it. Measured:
-    // steel photos varied by 3-13%, a hand of fingers by 24-30%. Wide
-    // disagreement does not tell us the right number, only that this number
-    // deserves checking.
-    S.agree = StackEngine.scansAgree(S.grey, S.W, S.H, S.line.p0, S.line.p1,
-      { sens: S.sens, pitchPx: (S.lockPitch && S.pitchPx) ? S.pitchPx : null });
-    if (!S.pitchPx || !S.lockPitch) S.pitchPx = r.pitchPx;
+    S.pitchPx = r.pitchPx;
+    S.cliff = r.cliff; S.how = r.how; S.agree = r.agree; S.nLines = r.nLines;
+    S.bounds = r.boundaries;
     S.marks = r.positions.map(t => ({ t, src: 'ai' }));
     updateTotal(); draw();
 
-    // Locking the spacing is right across sections of ONE stack and wrong the
-    // moment the part changes. Rather than silently using a stale figure, say so.
-    const off = (S.lockPitch && r.measuredPx && S.pitchPx)
-      ? Math.abs(r.measuredPx - S.pitchPx) / S.pitchPx : 0;
-    if (off > 0.25) {
-      S.pitchMismatch = r.measuredPx;
-      warn(`This swipe reads ${r.measuredPx.toFixed(0)}px between parts, but the ` +
-           `spacing is locked at ${S.pitchPx.toFixed(0)}px. Different part? ` +
-           `Tap here to re-measure.`);
-    } else if (S.agree === false) {
-      S.pitchMismatch = null;
-      warn('Scans either side of your swipe disagree — this may not be a regular ' +
-           'stack. Check the ticks before trusting the number.');
-    } else { S.pitchMismatch = null; setHint(); }
+    if (S.lines.length === 1 && r.how === 'spacing') {
+      warn('One swipe cannot separate a gap between parts from a mark on one. ' +
+           'Swipe again somewhere else across the same stack — two or three more ' +
+           'and it can vote.');
+    } else if (r.agree !== null && r.agree < 0.30) {
+      warn('These swipes disagree with each other. Are they all crossing the ' +
+           'same run of parts, square-on, first part to last?');
+    } else setHint();
   } catch (e) {
     openError(e.message || String(e));
   } finally { S.busy = false; hideBusy(); }
@@ -956,35 +1362,16 @@ function bumpSens(delta) {
 $('#sensDown').onclick = () => bumpSens(-0.1);
 $('#sensUp').onclick = () => bumpSens(+0.1);
 
-function scalePitch(k) {
-  if (!S.pitchPx || !S.line) return;
-  S.pitchPx = S.pitchPx * k; S.lockPitch = true;
-  runCount();
-}
-// Named for what the person sees, not for what the arithmetic does. "Too many"
-// means each part is bigger than the app assumed, so the spacing doubles and the
-// count roughly halves.
-$('#pDouble').onclick = () => scalePitch(2);
-$('#pHalf').onclick = () => scalePitch(0.5);
-$('#pSet').onclick = () => {
-  if (!S.line) return;
-  S.setSize = !S.setSize; S.sizeFirst = null;
-  $('#pSet').classList.toggle('on', S.setSize);
-  if (S.setSize) toast('Tap the middle of one part, then the middle of the one next to it');
-  else setHint();
-  draw();
-};
-
 /* -------------------------------------------------------------- sections */
 $('#addSection').onclick = () => {
   if (!S.marks.length) return;
   S.sections.push({ count: S.marks.length });
-  S.line = null; S.marks = [];
+  S.line = null; S.lines = []; S.marks = [];
   updateTotal(); draw(); setHint();
   toast(`Section saved. Take the next photo — the running total keeps counting.`);
 };
 $('#clearAll').onclick = () => {
-  S.sections = []; S.marks = []; S.line = null; S.pitchPx = null;
+  S.sections = []; S.marks = []; S.line = null; S.lines = []; S.pitchPx = null;
   updateTotal(); draw(); setHint();
 };
 
@@ -997,20 +1384,29 @@ function updateTotal() {
   if (S.sections.length) bits.push(`${S.sections.length} saved + ${here} here`);
   if (manual) bits.push(`${manual} by hand`);
   el.totalLab.textContent = bits.length ? bits.join(' · ') : 'count';
-  // The bar carries two different things: the Photo/Torch source toggle, which
-  // is useful the moment a pair exists, and the spacing corrections, which only
-  // mean anything once there is a count. Show the bar for either, hide the half
-  // that doesn't apply.
+  // The bar carries the Photo/Torch source toggle and, once there is a count,
+  // how cleanly the separations stood out from everything else.
   el.tools.hidden = !(S.line || S.pairDiff);
   // looked up rather than cached: updateTotal() runs once at start-up, before
   // the torch section further down has assigned its element references
   const tog = document.getElementById('srcTog');
   if (tog) tog.hidden = !S.pairDiff;
-  ['#pDouble', '#pHalf', '#pSet'].forEach(sel => {
-    const b = document.querySelector(sel); if (b) b.hidden = !S.line;
-  });
-  const lab = document.querySelector('#tools .lab');
-  if (lab) lab.hidden = !S.line;
+  const lab = document.querySelector('#cliffLab');
+  if (lab) {
+    lab.hidden = !(S.line && S.marks.length);
+    if (!lab.hidden) {
+      const n = S.nLines || S.lines.length;
+      const bits = [n === 1 ? '1 swipe' : n + ' swipes'];
+      if (S.agree != null) bits.push('agreement ' + S.agree.toFixed(2));
+      bits.push(S.how === 'cliff'
+        ? 'clear gaps (' + (S.cliff || 0).toFixed(1) + '\u00d7)'
+        : 'even spacing');
+      lab.textContent = bits.join(' \u00b7 ');
+      const good = (S.how === 'cliff' && S.cliff >= 4) || (S.agree != null && S.agree >= 0.45);
+      const bad  = n === 1 && S.how !== 'cliff';
+      lab.className = 'lab' + (good ? ' good' : bad ? ' bad' : '');
+    }
+  }
   el.secBar.hidden = !S.sections.length;
   el.secBar.textContent = S.sections.length
     ? 'sections: ' + S.sections.map(s => s.count).join(' + ') + (here ? ` + ${here}` : '')
@@ -1038,18 +1434,32 @@ function draw() {
   const tick = Math.max(10, (S.pitchPx || 20) * 0.75);
   const lw = Math.max(1.5, 2.2 / V.s);
 
-  g.strokeStyle = 'rgba(255,60,60,.75)'; g.lineWidth = lw;
-  g.beginPath(); g.moveTo(g2.p0.x, g2.p0.y); g.lineTo(g2.p1.x, g2.p1.y); g.stroke();
+  // every swipe, the first one brightest
+  S.lines.forEach((ln, li) => {
+    g.strokeStyle = li === 0 ? 'rgba(255,60,60,.8)' : 'rgba(255,120,120,.55)';
+    g.lineWidth = lw;
+    g.beginPath(); g.moveTo(ln.p0.x, ln.p0.y); g.lineTo(ln.p1.x, ln.p1.y); g.stroke();
+  });
 
-  if (S.setSize && S.sizeFirst !== null) {
-    const q = markPoint(S.sizeFirst);
-    const t2 = Math.max(10, (S.pitchPx || 20) * 1.1);
-    g.strokeStyle = '#ffb454'; g.lineWidth = lw * 2.6;
-    g.beginPath();
-    g.moveTo(q.x + g2.uy * t2, q.y - g2.ux * t2);
-    g.lineTo(q.x - g2.uy * t2, q.y + g2.ux * t2);
-    g.stroke();
+  // The boundaries the count is built from, drawn on every swipe that voted.
+  // Seeing them line up across the swipes is the whole idea made visible.
+  if (S.bounds && S.bounds.length) {
+    const t2 = Math.max(7, (S.pitchPx || 20) * 0.34);
+    g.strokeStyle = 'rgba(0,214,255,.9)'; g.lineWidth = lw * 1.4;
+    S.bounds.forEach((list, li) => {
+      const ln = S.lines[li]; if (!ln) return;
+      const vx = ln.p1.x - ln.p0.x, vy = ln.p1.y - ln.p0.y;
+      const L = Math.hypot(vx, vy), ux = vx / L, uy = vy / L;
+      list.forEach(t => {
+        const qx = ln.p0.x + vx * t, qy = ln.p0.y + vy * t;
+        g.beginPath();
+        g.moveTo(qx + uy * t2, qy - ux * t2);
+        g.lineTo(qx - uy * t2, qy + ux * t2);
+        g.stroke();
+      });
+    });
   }
+
   const showNum = V.s * (S.pitchPx || 20) > 26;
   S.marks.forEach((m, i) => {
     const q = markPoint(m.t);
@@ -1075,19 +1485,15 @@ function draw() {
 function setHint() {
   el.hint.className = 'hint';
   if (!S.img) return;
-  if (S.setSize) { el.hint.textContent =
-    'Tap the middle of one part, then the one next to it'; return; }
-  el.hint.textContent = !S.line
-    ? 'Swipe one finger across the parts — two fingers to pan and zoom'
-    : 'Tap a tick to remove · tap the line to add · swipe again to redo';
+  el.hint.textContent = !S.lines.length
+    ? 'Swipe from the middle of the FIRST part to the middle of the LAST'
+    : (S.lines.length < 3
+       ? 'Now swipe again somewhere else across the same parts — the swipes vote'
+       : 'Tap a tick to remove · tap the line to add · swipe again to add another vote');
 }
 function toast(msg) { el.hint.textContent = msg; el.hint.className = 'hint'; setTimeout(setHint, 5000); }
 function warn(msg) { el.hint.textContent = msg; el.hint.className = 'hint warn'; }
-el.hint.addEventListener('click', () => {
-  if (!S.pitchMismatch) return;
-  S.pitchPx = S.pitchMismatch; S.pitchMismatch = null;
-  runCount();
-});
+
 function showBusy(t) { el.busy.textContent = t; el.busy.hidden = false; }
 function hideBusy() { el.busy.hidden = true; }
 
@@ -1131,16 +1537,24 @@ function openSettings() {
     <div class="sub">Everything runs on this phone. No account, no network, no cost.</div>
     <div class="kv"><span>Version</span><b>${BUILD}</b></div>
 
-    <label>Part spacing</label>
-    <div class="kv"><span>Measured</span><b>${S.pitchPx ? S.pitchPx.toFixed(1) + ' px' : '—'}</b></div>
-    <div class="kv"><span>Scans agreed</span><b>${S.agree === null ? '—' : (S.agree ? 'yes' : 'no')}</b></div>
-    <div class="row2" style="margin-top:10px">
-      <button class="ghost ${S.lockPitch ? 'on' : ''}" id="lockOn">Lock after first swipe</button>
-      <button class="ghost ${S.lockPitch ? '' : 'on'}" id="lockOff">Re-measure each time</button>
-    </div>
-    <div class="note">Keep it locked when counting one stack across several photos: a short
-    swipe doesn't contain enough repeats to measure the spacing reliably, and gets it wrong
-    by a factor of two or three. Re-measure only when you switch to a different part.</div>
+    <label>How it counts</label>
+    <div class="note">Every swipe you make across the same stack is another vote.
+    A boundary between two parts is crossed by all of them; a scratch, a burr or a
+    blurred patch is crossed by one, and loses. Measured on a stack of 14 plates with
+    blurred edges, four swipes gave 4, 12, 11 and 6 on their own and 14 together.<br><br>
+    Two or three swipes, well apart, square across the parts, each starting on the first
+    part and ending on the last. Six is the most it keeps.</div>
+
+    <div class="kv"><span>Swipes in the vote</span><b>${S.nLines || S.lines.length || 0}</b></div>
+    <div class="kv"><span>Agreement between them</span><b>${S.agree == null ? '\u2014' : S.agree.toFixed(2)}</b></div>
+    <div class="kv"><span>Where it stopped counting</span><b>${S.how === 'cliff' ? 'a clear break in the gaps' : S.how ? 'even spacing' : '\u2014'}</b></div>
+    <div class="note">Agreement is how well the swipes corroborate each other, 0 to 1.
+    Below about 0.3 they are not looking at the same run of parts.<br><br>
+    <b>A clear break</b> means the gaps it kept were far deeper than anything it rejected
+    \u2014 no assumption needed, and on a hand of fingers this reads 20\u201380\u00d7.
+    <b>Even spacing</b> means it fell back to picking the number of gaps that comes out most
+    regular. That assumes the parts are alike and evenly stacked. It is the weakest step
+    in the whole thing and it is fitted to seven photographs.</div>
 
     <label for="ww">Working width</label>
     <input type="number" id="ww" value="${esc(work)}" min="800" max="6000" step="100">
@@ -1154,8 +1568,7 @@ function openSettings() {
       <button class="primary" id="ok">Done</button>
     </div>`;
   const bodyq = s => el.sheetBody.querySelector(s);
-  bodyq('#lockOn').onclick = () => { S.lockPitch = true; openSettings(); };
-  bodyq('#lockOff').onclick = () => { S.lockPitch = false; openSettings(); };
+
   bodyq('#clr2').onclick = () => { $('#clearAll').click(); el.sheet.classList.remove('on'); };
   bodyq('#ok').onclick = () => {
     const v = parseInt(bodyq('#ww').value, 10);
@@ -1327,7 +1740,7 @@ async function shootPair() {
     S.pairDiffCanvas = greyToCanvas(diff, lit.W, lit.H);
     S.torched = torched;
     S.W = lit.W; S.H = lit.H;
-    S.line = null; S.marks = []; S.pitchPx = null;
+    S.line = null; S.lines = []; S.marks = []; S.pitchPx = null;
     setSource('diff');
     el.empty.style.display = 'none';
     el.view.width = S.W; el.view.height = S.H;
